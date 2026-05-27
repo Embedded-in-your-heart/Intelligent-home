@@ -536,6 +536,25 @@ sudo systemctl status home-server
 | Phase 3 | 完整 web 層（auth、devices、channels、history）、SocketIO event、Chart.js 整合 | 從瀏覽器完成「新增裝置 → 新增頻道 → 即時看到數據 → 歷史趨勢圖」全流程 |
 | Phase 4 | 多節點佈署測試、systemd 部署、效能與穩定性調整 | RPi 同時連 ≥2 個 STM32 連續運作 ≥1 小時不掉線 |
 
+### 11.1 目前實作進度（截至 2026-05-27）
+
+Phase 3 依子階段拆分實作，目前進度：
+
+| 子階段 | 內容 | 狀態 |
+| --- | --- | --- |
+| 1 | 骨架、`config`、`schema.sql`、logging | ✅ 完成 |
+| 2 | BLE 層（interface / parser / rate_limiter / mock / bluepy manager） | ✅ 完成 |
+| 3a | DB repository 層（users / devices / channels / readings） | ✅ 完成 |
+| 3b | Service 層（`user_service` / `device_service` / `channel_service`） | ✅ 完成 |
+| 3c | 認證 blueprint（application factory、Flask-Login、CSRF、register/login/logout、陽春模板） | ✅ 完成 |
+| 3d | Device / Channel CRUD blueprint | ⬜ 未開始 |
+| 3e | SocketIO 即時推播 + Jinja2/HTMX 前端 + Chart.js | ⬜ 未開始 |
+| 4 | 多節點整合測試、systemd 部署 | ⬜ 未開始 |
+
+測試現況：103 unit tests passing、`ruff check` 與 `mypy src`（strict）全綠。
+
+> 3b 的設計取捨：service 層維持純業務邏輯，BLE 操作同步呼叫 `BLEManager` 介面（序列化由 `BluepyManager` 內部的 per-peripheral worker thread 處理）；§4.1.3 的自動重連背景迴圈與 §4.1.4 notify subscribe 的執行緒 wiring 留待 3e 與 SocketIO 一併接線。
+
 ---
 
 ## 12. 已知風險與待決議事項
@@ -553,9 +572,11 @@ sudo systemctl status home-server
 
 ## 13. 下一步行動
 
-1. **本文件 review 通過** → 在 `Intelligent-home-RPi-server/` 建立 uv 專案骨架
-2. 依 §6 建立目錄結構與空模組
-3. 進入 Phase 1 實作（依 §11）
+Phase 1–3c 已完成（見 §11.1）。後續：
+
+1. **Phase 3d**：實作 Device / Channel CRUD blueprint，沿用既有 service 層（`DeviceService` / `ChannelService`）
+2. **Phase 3e**：Flask-SocketIO 即時推播，接線 notify subscribe 與自動重連，整合 Jinja2/HTMX 前端與 Chart.js
+3. **Phase 4**：多節點整合測試與 `systemd` 部署
 
 ---
 

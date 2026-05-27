@@ -150,6 +150,8 @@
 
 ## 7. 專案開發進度表 (Development Phases)
 
+> **RPi Server 端目前進度（2026-05-27）：** Phase 1–2，以及 Phase 3 的伺服器骨架、BLE 層、DB repository、Service 層與認證系統（註冊／登入／登出）已完成並通過測試（103 unit tests）；尚待裝置／頻道管理頁面、SocketIO 即時推播與前端趨勢圖。細項見 [RPi-Server 開發文件 §11.1](./RPi-Server%20開發文件.md)。
+
 本項目預計分為四個階段逐步實作 ：  
 
 - 
