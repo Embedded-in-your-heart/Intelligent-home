@@ -1,0 +1,406 @@
+% !TEX program = xelatex
+% Intelligent Home Control System — Progress Report
+% Compile: xelatex progress_report.tex (twice for TOC)
+
+\documentclass[10pt,aspectratio=169]{beamer}
+
+% ---- Theme ----
+\usetheme{metropolis}
+\metroset{progressbar=frametitle, numbering=fraction, sectionpage=progressbar}
+
+% ---- Chinese (xeCJK + macOS system fonts) ----
+\usepackage{fontspec}
+\usepackage{xeCJK}
+% 標楷體 (DFKai-SB) has no bold variant — fake bold for \textbf
+\setCJKmainfont[AutoFakeBold=2.5]{標楷體}
+\setCJKsansfont[AutoFakeBold=2.5]{標楷體}
+\setCJKmonofont{標楷體}
+\XeTeXlinebreaklocale "zh"
+\XeTeXlinebreakskip = 0pt plus 1pt
+
+% ---- Packages ----
+\usepackage{booktabs}
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, shapes.geometric, fit, backgrounds}
+\usepackage{appendixnumberbeamer}
+
+% ---- Colors (accent for in-progress / planned) ----
+\definecolor{accent}{HTML}{E07A1F}      % orange — in progress
+\definecolor{planned}{HTML}{B0B0B0}     % gray — planned
+\definecolor{done}{HTML}{2E8B57}        % green — done
+
+% ---- Metadata ----
+\title{智能家庭控制系統}
+\subtitle{專題進度報告 — RPi Server 開發進展}
+\author{趙子佾 \and 詹詠翔 \and 詹育晟}
+\institute{基於 Raspberry Pi 3 與 STM32 之 BLE 通訊應用}
+\date{2026 年 5 月}
+
+% ---- Helper macros ----
+\newcommand{\dn}[1]{\textcolor{done}{\textbf{#1}}}
+\newcommand{\ip}[1]{\textcolor{accent}{\textbf{#1}}}
+\newcommand{\pl}[1]{\textcolor{planned}{\textbf{#1}}}
+
+\begin{document}
+
+% ============================================================
+\maketitle
+
+% ============================================================
+\begin{frame}{Outline}
+  \tableofcontents
+\end{frame}
+
+% ============================================================
+\section{專案動機與目標}
+
+\begin{frame}{動機：異質設備整合的挑戰}
+  \begin{itemize}
+    \item STM32 開發板具備豐富感測器，但\textbf{網路與伺服能力薄弱}
+    \item 若每個節點各自連網，將造成\textbf{部署成本高}且\textbf{耗電}
+    \item 需要一個\textbf{通用的中央伺服器}動態管理多個感測節點
+  \end{itemize}
+
+  \vfill
+  \begin{block}{設計目標}
+    建立一套\textbf{高度模組化}、具備\textbf{本地端安全性}、
+    以 BLE 為通訊核心的智慧家庭生態系統。
+  \end{block}
+\end{frame}
+
+\begin{frame}{核心架構：中央伺服器 + BLE}
+  \begin{itemize}
+    \item \textbf{使用者} 透過 Web UI 遠端控制
+    \item \textbf{周邊設備} 不需各自連網，統一透過 BLE 與 RPi 通訊
+    \item 達到顯著\textbf{省電}與\textbf{部署簡化}效果
+  \end{itemize}
+\end{frame}
+
+% ============================================================
+\section{系統架構}
+
+\begin{frame}{硬體部署：一對多分散式節點}
+  \begin{center}
+  \begin{tikzpicture}[
+      node distance=1.2cm and 1.6cm,
+      every node/.style={font=\small},
+      box/.style={draw, rounded corners=2pt, minimum width=2.2cm,
+                  minimum height=0.9cm, align=center, thick},
+      rpi/.style={box, fill=done!15, draw=done},
+      stm/.style={box, fill=accent!15, draw=accent},
+      user/.style={box, fill=blue!10, draw=blue!60},
+    ]
+    \node[user] (user) {使用者\\ \scriptsize (Browser)};
+    \node[rpi, right=2.4cm of user] (rpi) {Raspberry Pi 3\\ \scriptsize 中央伺服器};
+    \node[stm, above right=0.3cm and 2.2cm of rpi] (s1) {STM32\\ \scriptsize 客廳};
+    \node[stm, right=2.2cm of rpi] (s2) {STM32\\ \scriptsize 廚房};
+    \node[stm, below right=0.3cm and 2.2cm of rpi] (s3) {STM32\\ \scriptsize 房間};
+
+    \draw[<->, thick] (user) -- node[above]{\scriptsize HTTP/WS} (rpi);
+    \draw[<->, thick, accent] (rpi) -- node[above, sloped]{\scriptsize BLE} (s1);
+    \draw[<->, thick, accent] (rpi) -- node[above]{\scriptsize BLE} (s2);
+    \draw[<->, thick, accent] (rpi) -- node[below, sloped]{\scriptsize BLE} (s3);
+  \end{tikzpicture}
+  \end{center}
+
+  \begin{itemize}
+    \item RPi 同時管理多個不同空間的 STM32 節點
+    \item 使用者端僅需與 RPi 互動
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{BLE 通訊模型}
+  \begin{block}{三階段通訊流程}
+    \textbf{廣播} (Advertising) $\to$
+    \textbf{連線} (GATT Connect) $\to$
+    \textbf{推播} (Notify)
+  \end{block}
+
+  \vspace{0.5em}
+  \begin{table}
+    \centering
+    \small
+    \begin{tabular}{@{}lll@{}}
+      \toprule
+      \textbf{頻道類型} & \textbf{BLE 行為} & \textbf{應用情境} \\
+      \midrule
+      Controller & Server $\to$ Write   & 燈光開關、溫度設定 \\
+      Display    & Server $\leftarrow$ Read/Notify & 溫濕度、晃動、聲音偵測 \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+
+  \vspace{0.3em}
+  \scriptsize 註：未來預留 Hybrid 複合型頻道擴充空間。
+\end{frame}
+
+% ============================================================
+\section{RPi Server 設計}
+
+\begin{frame}{技術棧}
+  \begin{columns}[T]
+    \column{0.5\textwidth}
+    \textbf{執行環境}
+    \begin{itemize}
+      \item Python 3.11+（dev 用 3.12）
+      \item uv \, 套件管理
+      \item Taskfile \, 統一指令入口
+    \end{itemize}
+
+    \textbf{Web 層}
+    \begin{itemize}
+      \item Flask + Flask-Login
+      \item Flask-WTF（CSRF）
+      \item Jinja2 模板
+    \end{itemize}
+
+    \column{0.5\textwidth}
+    \textbf{資料層}
+    \begin{itemize}
+      \item SQLite + WAL
+      \item 自製 repository 層
+    \end{itemize}
+
+    \textbf{BLE 層}
+    \begin{itemize}
+      \item bluepy（Linux/RPi）
+      \item Mock 實作（Windows dev）
+    \end{itemize}
+
+    \textbf{品質工具}
+    \begin{itemize}
+      \item ruff、mypy strict
+      \item pytest（103 tests）
+    \end{itemize}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{模組分層}
+  \begin{center}
+  \begin{tikzpicture}[
+      every node/.style={font=\small},
+      layer/.style={draw, rounded corners=2pt, minimum width=8cm,
+                    minimum height=0.85cm, align=center, thick},
+    ]
+    \node[layer, fill=blue!10]   (web) {\textbf{web/} \, Flask blueprints、auth、templates};
+    \node[layer, fill=done!15, below=0.25cm of web]   (svc) {\textbf{services/} \, user / device / channel \, 業務邏輯};
+    \node[layer, fill=orange!15, below=0.25cm of svc] (db)  {\textbf{db/} \, repository（users / devices / channels / readings）};
+    \node[layer, fill=accent!15, below=0.25cm of db]  (ble) {\textbf{ble/} \, interface / parser / rate\_limiter / managers};
+    \node[layer, fill=gray!15, below=0.25cm of ble]   (core){\textbf{core/} \, config、logging};
+
+    \draw[-{Latex[length=2mm]}, thick] (web) -- (svc);
+    \draw[-{Latex[length=2mm]}, thick] (svc) -- (db);
+    \draw[-{Latex[length=2mm]}, thick] (svc) -- ++(3.5,-0.55) |- (ble);
+  \end{tikzpicture}
+  \end{center}
+
+  \begin{itemize}
+    \item 上層只依賴下層；service 層為純業務邏輯
+    \item BLE 介面用 \texttt{Protocol} 抽象，方便 mock 測試
+  \end{itemize}
+\end{frame}
+
+% ============================================================
+\section{已完成進度}
+
+\begin{frame}{\dn{已完成} Phase 1–2：骨架與 BLE 通訊鏈結}
+  \textbf{Phase 1：骨架}
+  \begin{itemize}
+    \item uv 專案、目錄結構、\texttt{config.py} 讀環境變數
+    \item \texttt{db/schema.sql}：users / devices / channels / readings + WAL
+    \item \texttt{\_\_main\_\_.py}：可啟動 Flask app，含 \texttt{/health}
+  \end{itemize}
+
+  \vspace{0.5em}
+  \textbf{Phase 2：BLE 通訊}
+  \begin{itemize}
+    \item \texttt{ble/interface.py}：\texttt{BLEManager} Protocol 抽象
+    \item \texttt{ble/parser.py}：10 種格式雙向轉換（int/uint 8/16/32、float32，LE/BE）
+    \item \texttt{ble/rate\_limiter.py}：per-key 限頻，可注入 fake clock
+    \item \texttt{ble/mock\_manager.py} / \texttt{bluepy\_manager.py}：Windows dev 與 RPi 雙實作
+    \item \texttt{bluepy\_manager}：每個 peripheral 一個 worker thread + command queue，避開 bluepy 跨執行緒問題
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{\dn{已完成} Phase 3a：DB Repository 層}
+  四個 repository 模組，每個自帶領域錯誤型別：
+  \begin{itemize}
+    \item \texttt{db/users.py}：\texttt{create / get\_by\_id / get\_by\_username / update\_password}
+    \item \texttt{db/devices.py}：\texttt{create / get\_by\_*  / list\_* / delete}
+    \item \texttt{db/channels.py}：含 \texttt{Literal["controller", "display"]} 型別
+    \item \texttt{db/readings.py}：\texttt{insert / list\_by\_channel / delete\_older\_than}
+  \end{itemize}
+
+  \vspace{0.5em}
+  \begin{block}{設計重點}
+    \begin{itemize}
+      \item 時間戳統一 UTC \texttt{"YYYY-MM-DD HH:MM:SS"} 字串
+      \item 領域錯誤：\texttt{DuplicateUsernameError}、\texttt{DeviceNotFoundError} …
+      \item 測試 fixture：in-memory SQLite + schema 已套用
+    \end{itemize}
+  \end{block}
+\end{frame}
+
+\begin{frame}{\dn{已完成} Phase 3b：Service 層}
+  \textbf{UserService}
+  \begin{itemize}
+    \item bcrypt 雜湊（cost 可注入，測試用低 cost）
+    \item 密碼長度 8–72 bytes（避免 bcrypt 截斷）
+  \end{itemize}
+
+  \textbf{DeviceService}（建構注入 \texttt{BLEManager}）
+  \begin{itemize}
+    \item \texttt{scan / add\_device / remove\_device / list\_devices}
+    \item \texttt{add\_device}：驗證 MAC → 寫 DB → best-effort 連線
+  \end{itemize}
+
+  \textbf{ChannelService}（注入 BLE、RateLimiter、\texttt{on\_reading} callback）
+  \begin{itemize}
+    \item \texttt{write\_command}：僅 controller 型，編碼後 BLE write
+    \item \texttt{handle\_notify}：解析 → 即時推播（不限頻）→ DB 寫入（限頻）
+    \item \texttt{get\_history / list\_by\_device}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{\dn{已完成} Phase 3c：認證 Blueprint}
+  \begin{itemize}
+    \item \texttt{web/\_\_init\_\_.py}：application factory \texttt{create\_app}
+    \item 整合 \textbf{Flask-Login} + \textbf{Flask-WTF CSRF}
+    \item \texttt{web/db.py}：per-request SQLite 連線（\texttt{flask.g} + teardown）
+    \item \texttt{web/auth.py}：\texttt{/auth/register}、\texttt{/auth/login}、\texttt{/auth/logout}
+    \item \texttt{next} 參數的 \textbf{open-redirect 防護}
+    \item Jinja2 陽春模板（base / index / auth）含 CSRF token
+  \end{itemize}
+
+  \vspace{0.4em}
+  \begin{alertblock}{里程碑}
+    可從瀏覽器完成「\textbf{註冊 → 自動登入 → 登出}」完整流程
+  \end{alertblock}
+\end{frame}
+
+\begin{frame}{測試與品質}
+  \begin{columns}[T]
+    \column{0.55\textwidth}
+    \textbf{測試覆蓋}
+    \begin{itemize}
+      \item \textbf{103} unit tests passing
+      \item in-memory SQLite fixture
+      \item fake clock 注入測限頻
+      \item mock \texttt{BLEManager} 測 service
+    \end{itemize}
+
+    \column{0.45\textwidth}
+    \textbf{靜態檢查}
+    \begin{itemize}
+      \item \texttt{ruff check} \, 全綠
+      \item \texttt{mypy src} (strict) \, 全綠
+      \item per-module type overrides
+    \end{itemize}
+  \end{columns}
+
+  \vspace{0.6em}
+  \begin{block}{CI 入口}
+    \texttt{task ci} \, = \, lint + typecheck + test
+  \end{block}
+\end{frame}
+
+% ============================================================
+\section{進行中與規劃}
+
+\begin{frame}{\ip{進行中} Phase 3d：Device / Channel CRUD}
+  尚待補齊的 Blueprint：
+  \begin{itemize}
+    \item \texttt{/devices}：列表、掃描、新增、刪除
+    \item \texttt{/devices/<id>/channels}：新增、刪除
+    \item \texttt{POST /channels/<id>/write}：控制型頻道下指令
+  \end{itemize}
+
+  \vspace{0.6em}
+  \textbf{設計重點}
+  \begin{itemize}
+    \item 重用既有 \texttt{DeviceService} / \texttt{ChannelService}
+    \item Server-rendered 表單 + CSRF；後續再以 HTMX 強化體驗
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{\pl{規劃中} Phase 3e：SocketIO 即時推播與前端}
+  \textbf{後端}
+  \begin{itemize}
+    \item Flask-SocketIO（threading 模式）
+    \item 與 bluepy worker thread 串接
+    \item 每個監控型頻道一個 SocketIO room
+  \end{itemize}
+
+  \textbf{前端}
+  \begin{itemize}
+    \item Jinja2 + \textbf{HTMX} 漸進增強
+    \item \textbf{Chart.js} 繪製歷史趨勢圖
+    \item 訂閱 Notify 事件後即時更新圖表
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{\pl{規劃中} STM32 韌體開發}
+  \textbf{硬體：B-L475E-IOT01A}
+  \begin{itemize}
+    \item HTS221 \, 溫濕度感測器
+    \item LSM6DSL \, 加速度 / 陀螺儀
+    \item MP34DT01 \, 數位麥克風
+    \item NFC、使用者 LED
+  \end{itemize}
+
+  \textbf{韌體任務}
+  \begin{itemize}
+    \item 開發 BLE GATT Service \, /\, Characteristic 設計
+    \item 感測器資料採集與封包格式（對齊 RPi 端 parser）
+    \item 接收控制指令（LED、設定值）
+    \item 工具鏈：\textbf{STM32CubeIDE} + ST HAL
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{\pl{規劃中} 端到端整合}
+  \begin{itemize}
+    \item 多 STM32 節點\textbf{分散式佈署測試}（客廳 / 廚房 / 房間）
+    \item RPi $\leftrightarrow$ STM32 \textbf{真機聯調}
+    \item BLE \textbf{Notify 推播延遲}量測
+    \item 異常情境：斷線重連、信號弱、節點重啟
+  \end{itemize}
+
+  \vspace{0.5em}
+  \begin{block}{驗收標準}
+    至少 3 個 STM32 節點同時連線 30 分鐘以上，
+    Notify 訊息掉包率 \textless{} 1\%。
+  \end{block}
+\end{frame}
+
+\begin{frame}{\pl{規劃中} Phase 4：部署與穩定性}
+  \begin{itemize}
+    \item \texttt{systemd} service 安裝腳本（boot 即啟動）
+    \item RPi 上長時間穩定性測試（記憶體 / 連線 / DB 大小）
+    \item 部署文件與 troubleshooting guide
+    \item 成果展示準備
+  \end{itemize}
+\end{frame}
+
+% ============================================================
+\section{結語}
+
+\begin{frame}{里程碑摘要}
+  \begin{itemize}
+    \item[\textcolor{done}{$\checkmark$}] \dn{Phase 1–2}：骨架 + BLE 通訊鏈結
+    \item[\textcolor{done}{$\checkmark$}] \dn{Phase 3a–c}：DB / Service / 認證 \, ── \, 103 tests 全綠
+    \item[\textcolor{accent}{$\circ$}]    \ip{Phase 3d}：Device / Channel CRUD
+    \item[\textcolor{planned}{$\cdot$}]   \pl{Phase 3e}：SocketIO + 前端趨勢圖
+    \item[\textcolor{planned}{$\cdot$}]   \pl{STM32 韌體}：B-L475E-IOT01A BLE peripheral
+    \item[\textcolor{planned}{$\cdot$}]   \pl{Phase 4}：整合測試與部署
+  \end{itemize}
+
+  \vfill
+  \centering
+  \Large 下一步：\, 完成 Phase 3d，並開始 STM32 端 BLE Service 設計。
+\end{frame}
+
+\begin{frame}[standout]
+  Q \& A
+\end{frame}
+
+\end{document}
