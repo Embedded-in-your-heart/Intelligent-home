@@ -1,3 +1,6 @@
 [submodule "Intelligent-home-RPi-server"]
 	path = Intelligent-home-RPi-server
 	url = https://github.com/Embedded-in-your-heart/Intelligent-home-RPi-server
+[submodule "Intelligent-home-STM32-client"]
+	path = Intelligent-home-STM32-client
+	url = https://github.com/Embedded-in-your-heart/Intelligent-home-STM32-client
