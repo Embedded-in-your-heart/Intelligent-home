@@ -63,3 +63,5 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+For project details, read @"docs/智能家庭控制系統開發文件 (System Development Document).md"
