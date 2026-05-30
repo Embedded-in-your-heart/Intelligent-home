@@ -347,6 +347,17 @@ Intelligent-home-STM32-client/
 
 > STM32 端難以完全脫離硬體做單元測試。本專案採用「分層驗證」而非追求覆蓋率。
 
+### 10.1 開發工作流程：先 serial 再 BLE
+
+每個新增的感測器 / 致動器都遵守兩步流程：
+
+1. **Serial 驗證階段**：先把原始讀值、解碼後數值、事件觸發都打到 USART1 VCP；肉眼確認 I²C / DMA / 時間軸 / 門檻全部正確。**此階段完全不動 BlueNRG stack**。
+2. **BLE 串接階段**：上一步全部 pass 才把資料推到 `NotifyQueue` 給 BleTask 呼叫 `aci_gatt_update_char_value()`；或在 Write callback 中驅動 GPIO，完成端到端。
+
+為什麼這樣分：BlueNRG-MS 偶發 HCI timeout、SPI 卡死、`aci_gatt_update_char_value()` 回非零 status 等錯誤，與「感測器讀值錯」症狀類似但解法完全不同。先讓 serial 看到正確值，就能把這兩類問題切開。Milestone 編號裡的「a / b」後綴對應這兩個階段（見 §14）。
+
+### 10.2 分層驗證表
+
 | 層 | 策略 | 工具 |
 | --- | --- | --- |
 | 感測器讀取 | 燒錄後 `printf` 顯示原始與計算後數值，肉眼比對 | VCP |
@@ -370,13 +381,24 @@ Intelligent-home-STM32-client/
 
 ### 11.1 目前實作進度（截至 2026-05-30）
 
-| 項目 | 狀態 |
-| --- | --- |
-| 板子可開機、BlueNRG_MS 起點程式碼匯入 | ✅ |
-| `.ioc` 內 FreeRTOS / SPI / I²C / DFSDM 啟用 | 🔲 需確認（在 Phase 1 開頭驗證並補上） |
-| GATT 表 §5.4 註冊 | ⬜ 未開始 |
-| Sensor/Audio Task 實作 | ⬜ 未開始 |
-| 與 RPi 整合 | ⬜ 未開始 |
+| Milestone | 子項目 | 狀態 |
+| --- | --- | --- |
+| M0 | 板子可開機、BlueNRG_MS template 匯入 | ✅ |
+| M0 | `.ioc` 設定齊備（SPI3、I²C2 polling、DFSDM1 + DMA、FreeRTOS Heap 24 KB、HAL Timebase=TIM1、`LED1_PIN`=PA5） | ✅ |
+| **M1** | `gatt_db.{c,h}` 改寫為 §5.4 兩個 Service / 9 條 char（固定 UUID） | ✅ |
+| **M1** | `sensor.c` 廣告 local name 改成執行時組 `HOME-XXXX` | ✅ |
+| **M1** | `app_bluenrg_ms.c` 砍掉 SensorDemo 邏輯、無 pairing | ✅ |
+| **M1** | `freertos.c` 新增 `BleTask`（osPriorityHigh, 1 KB stack） | ✅ |
+| **M1** | `BLE1_DEBUG=1` + `BUS_UART1_BAUDRATE=115200` | ✅ |
+| **M1** | nRF Connect 看得到 `HOME-XXXX`、GATT browser 與 §5.4 一致、Write Control char 進入 `Attribute_Modified_CB` | ✅（2026-05-30 驗證） |
+| M2a | I²C2 thin wrapper + HTS221 / LSM6DSL 暫存器 driver | ⬜ |
+| M2a | `sensor_task.c` + SensorTask 4 Hz 採集，USART1 印解碼值 | ⬜ |
+| M2b | NotifyQueue + Temperature / Humidity / AccelMag / GyroMag / MotionAlert BLE 推播 | ⬜ |
+| M3a | DFSDM DMA 啟動 + RMS 計算，`audio_task.c` 印 mic 能量 | ⬜ |
+| M3b | MicLevel / LoudAlert BLE 推播 | ⬜ |
+| M4 | `Attribute_Modified_CB` 內驅動 PA5 GPIO；ControlFlag 持久化 | ⬜ |
+| Phase 3 | 與 RPi 端整合測試 | ⬜ |
+| Phase 4 | 多節點、連線穩定性、（選用）low power | ⬜ |
 
 ---
 
@@ -417,13 +439,57 @@ Intelligent-home-STM32-client/
 
 ## 14. 下一步行動
 
-按本文件對齊後，下一步進入 Phase 1：
+Milestone 1 已完成（2026-05-30）。後續按 §10.1 「先 serial 再 BLE」流程逐 milestone 推進。
 
-1. ~~確認 `.ioc` 狀態~~ ✅ 已完成（2026-05-30）：SPI3、I²C2 polling、DFSDM1（OutputClock divider=39、Ch1 SPI Falling）、DMA1_Ch4 Circular、FreeRTOS Heap 24 KB、HAL Timebase=TIM1、PA5=`LED1_PIN`。
-2. **改造 `BlueNRG_MS/App/gatt_db.c`**：依 §5.4 註冊 Home Sensor / Home Control Service，固定 UUID。
-3. **重整 `app_bluenrg_ms.c`**：移除 ST BLE Sensor App 專屬邏輯，留 BLE init + adv + event loop；廣播名稱改為 `HOME-XXXX`。
-4. **建立 task 骨架**：在 `freertos.c` USER 區塊建立 `BleTask` / `SensorTask` / `AudioTask` + queue。
-5. **整合 BSP 感測器讀取**：HTS221 + LSM6DSL + DFSDM。
-6. **驗證**：nRF Connect 確認 §5.4 GATT 表全數可見、Read 有資料、Notify 有持續推送、Write LED 有反應。
+### Milestone 2 — 環境 / 動作感測器
+
+**2a：Serial 驗證**
+- 新增 `BlueNRG_MS/App/i2c_dev.{c,h}`：I²C2 read / write byte 與 multi-byte register block helper（B-L475E-IOT01A1 BSP 沒附 MEMS driver）
+- 新增 `BlueNRG_MS/App/hts221.{c,h}`：WHO_AM_I 檢查、讀 H0/H1/T0/T1 校正、解碼 `HUM_OUT` / `TEMP_OUT`
+- 新增 `BlueNRG_MS/App/lsm6dsl.{c,h}`：WHO_AM_I、CTRL1_XL（accel 416 Hz / ±2 g）/ CTRL2_G（gyro 416 Hz / 250 dps）、讀 `OUTX_L/H_A` × 3 / `OUTX_L/H_G` × 3
+- 新增 `BlueNRG_MS/App/sensor_task.{c,h}`：FreeRTOS task（osPriorityNormal, 768 B stack），250 ms tick：4 Hz LSM6DSL、每 4 tick 一次 HTS221
+- `freertos.c` USER 區塊建 SensorTask
+- USART1 印 `[env] T=25.3 H=42.1` 每秒、`[imu] mag_a=1.01g mag_g=2dps` 每 250 ms
+- **驗證**：室溫、握住板子體溫上升、搖晃 → 加速度爆增、靜止 → 陀螺儀近零
+
+**2b：BLE 串接**
+- 在 `freertos.c` 加 `NotifyQueue`（`osMessageQueue`, 16 元素 × 8 byte）：`{char_id, len, payload[4]}`
+- 在 `gatt_db.c` 新增內部 `enum HomeCharId`（temp / humidity / accel_mag / gyro_mag / motion_alert / mic_level / loud_alert / led1 / control_flag），讓 BleTask 一個 switch 派送
+- SensorTask：計算 `AccelMagnitude` / `GyroMagnitude`、MotionAlert 門檻 + 反跳（§5.5）→ 入 queue
+- BleTask 主迴圈追加 `osMessageQueueGet(NotifyQueue, ..., 0)` → 依 char_id 呼 `Home_*_Update`
+- **驗證**：nRF Connect 訂閱 Temperature 看到秒級更新；搖晃看到 AccelMag 跳動、MotionAlert 從 0 → 1
+
+### Milestone 3 — 麥克風
+
+**3a：Serial 驗證**
+- 新增 `BlueNRG_MS/App/audio_task.{c,h}`：FreeRTOS task（osPriorityNormal, 1 KB stack）
+- AudioTask init 時呼 `HAL_DFSDM_FilterRegularStart_DMA(&hdfsdm1_filter0, buf, BUF_LEN)`，CIRCULAR 模式
+- 實作 `HAL_DFSDM_FilterRegConvHalfCpltCallback` / `HAL_DFSDM_FilterRegConvCpltCallback`（在 `Core/Src/stm32l4xx_it.c` 的 USER 區塊或新檔），把半 / 全 buffer 內樣本平方累加，透過 task notification 喚醒 AudioTask
+- AudioTask 取累加值 → `sqrt` 一次 → 印 `[mic] rms=42`
+- **驗證**：安靜 baseline 約幾十、拍手 / 說話飆到上百
+
+**3b：BLE 串接**
+- 正規化：`MicLevel = clamp(round(rms / scale), 0, 1023)`，`scale` 用 3a 抓的 baseline 校
+- LoudAlert：`MicLevel > 800` 連續 ≥ 200 ms（同 §5.5）
+- 推 NotifyQueue → BleTask
+- **驗證**：nRF Connect 訂閱 MicLevel 看到 200 ms 級數值流；拍手觸發 LoudAlert
+
+### Milestone 4 — 致動器
+
+> 範圍小，不切 a/b：寫 callback 即可同時用 nRF Connect 立刻驗。
+- `gatt_db.c::Attribute_Modified_CB` 內 `if (handle == led1_state_char_handle + 1)` 那段：呼 `HAL_GPIO_WritePin(LED1_PIN_GPIO_Port, LED1_PIN_Pin, data[0] ? GPIO_PIN_SET : GPIO_PIN_RESET)`
+- ControlFlag：先存在 `static volatile uint8_t g_control_flag` 全域，PRINTF 印出新值即可（無實際動作，保留擴充點）
+- **驗證**：nRF Connect 寫 `0x01` 到 `1A22F002` → PA5 LED 亮、`0x00` → 熄滅；寫 `0xAB` 到 `1A22F003` → serial 印 `Write ControlFlag = 0xAB`
+
+### Phase 2 完成標準
+- nRF Connect 訂閱 7 條 Display char 全部都有數據流
+- 寫 2 條 Control char 都有反應
+- 連續 30 分鐘不掉線、不需要復位
+
+### Phase 3 / Phase 4
+
+主文件對應的後續：
+- **Phase 3**：與 RPi server 端整合（RPi 接 §3e SocketIO + Web Dashboard 後直連本韌體）
+- **Phase 4**：多 STM32 節點同時佈署、連線穩定性、（選用）low power
 
 文件結束。如需修改技術選型、GATT 表或任務模型，請在實作前提出討論。
