@@ -379,7 +379,7 @@ Intelligent-home-STM32-client/
 | Phase 3 | 與 RPi 端整合：Web UI 新增頻道後可即時看到趨勢、可下指令控制 LED | 從瀏覽器看到溫度趨勢圖、按 UI 按鈕 LED 亮滅 |
 | Phase 4 | 連線穩定性調整、（選用）low power、多節點同時上線測試 | 兩台 STM32 同時連 RPi ≥ 1 小時不掉線 |
 
-### 11.1 目前實作進度（截至 2026-05-30）
+### 11.1 目前實作進度（截至 2026-05-31）
 
 | Milestone | 子項目 | 狀態 |
 | --- | --- | --- |
@@ -391,12 +391,12 @@ Intelligent-home-STM32-client/
 | **M1** | `freertos.c` 新增 `BleTask`（osPriorityHigh, 1 KB stack） | ✅ |
 | **M1** | `BLE1_DEBUG=1` + `BUS_UART1_BAUDRATE=115200` | ✅ |
 | **M1** | nRF Connect 看得到 `HOME-XXXX`、GATT browser 與 §5.4 一致、Write Control char 進入 `Attribute_Modified_CB` | ✅（2026-05-30 驗證） |
-| M2a | I²C2 thin wrapper + HTS221 / LSM6DSL 暫存器 driver | ⬜ |
-| M2a | `sensor_task.c` + SensorTask 4 Hz 採集，USART1 印解碼值 | ⬜ |
-| M2b | NotifyQueue + Temperature / Humidity / AccelMag / GyroMag / MotionAlert BLE 推播 | ⬜ |
-| M3a | DFSDM DMA 啟動 + RMS 計算，`audio_task.c` 印 mic 能量 | ⬜ |
-| M3b | MicLevel / LoudAlert BLE 推播 | ⬜ |
-| M4 | `Attribute_Modified_CB` 內驅動 PA5 GPIO；ControlFlag 持久化 | ⬜ |
+| **M2a** | X-CUBE-MEMS1 + X-CUBE-ALGOBUILD generate（含 HTS221/LSM6DSL component driver + CMSIS-DSP） | ✅（2026-05-31） |
+| **M2a** | `sensor_task.c` + SensorTask 4 Hz 採集（走 BSP_I2C2 + component driver），USART1 印解碼值 | ✅（2026-05-31 驗證：室溫合理、握住升溫、搖晃 accel 跳、靜止 gyro 近零） |
+| **M2b** | `notify_queue.{c,h}` + SensorTask 推 NotifyQueue + BleTask `NotifyQueue_Pump()` + MotionAlert 100 ms hold / 1 s lockout | ✅（2026-05-31 驗證：nRF Connect 訂閱所有 5 條感測 char 看到資料流） |
+| **M3a** | DFSDM DMA 啟動 + RMS 計算，`audio_task.c` 印 mic 能量 | ⚠️ **受阻** — DMA request 映射錯，詳見 §15 |
+| **M3b** | MicLevel / LoudAlert BLE 推播 | ⬜ 受阻於 M3a |
+| **M4** | `Attribute_Modified_CB` 內驅動 PA5 GPIO；ControlFlag 持久化 | ✅（2026-05-31 驗證：nRF Connect 寫 0x01 LED 亮、0x00 熄滅、ControlFlag echo） |
 | Phase 3 | 與 RPi 端整合測試 | ⬜ |
 | Phase 4 | 多節點、連線穩定性、（選用）low power | ⬜ |
 
@@ -434,6 +434,7 @@ Intelligent-home-STM32-client/
 | 低功耗模式 | v1 沒做，FreeRTOS idle 不進 sleep | 主文件 §2.2 提到省電是核心目標；Phase 4 再優化 |
 | 燒錄後 `data_format` 與 RPi 不一致 | RPi 解錯誤 | 本文件 §12 為唯一真實來源；變更須同步通知 RPi |
 | Magnitude 計算用 `sqrt()` | M4F 有 FPU 不致命，但麥克風 RMS 量大時要小心 | RMS 用 int 累加 → 最後一次 sqrt |
+| **DFSDM1_FLT0 DMA request 映射** | CubeMX 在 MSP 內把 `Init.Request = DMA_REQUEST_0`（=ADC2 on STM32L475），但 DFSDM1_FLT0 應為 C4S=7。Filter 產 data 但 DMA 永遠等不到 request | M3a **暫緩**；修法嘗試見 §15。對主功能（溫濕度 / 加速度 / LED 控制 / Phase 3 RPi 整合）無影響 |
 
 ---
 
@@ -461,6 +462,8 @@ Milestone 1 已完成（2026-05-30）。後續按 §10.1 「先 serial 再 BLE�
 
 ### Milestone 3 — 麥克風
 
+> ⚠️ **狀態：暫緩（2026-05-31）**。3a 卡在 DFSDM1_FLT0 ↔ DMA1_Channel4 的 CSELR 映射，詳見 §15。下面內容保留為原規劃，恢復時參考。
+
 **3a：Serial 驗證**
 - 新增 `BlueNRG_MS/App/audio_task.{c,h}`：FreeRTOS task（osPriorityNormal, 1 KB stack）
 - AudioTask init 時呼 `HAL_DFSDM_FilterRegularStart_DMA(&hdfsdm1_filter0, buf, BUF_LEN)`，CIRCULAR 模式
@@ -482,7 +485,7 @@ Milestone 1 已完成（2026-05-30）。後續按 §10.1 「先 serial 再 BLE�
 - **驗證**：nRF Connect 寫 `0x01` 到 `1A22F002` → PA5 LED 亮、`0x00` → 熄滅；寫 `0xAB` 到 `1A22F003` → serial 印 `Write ControlFlag = 0xAB`
 
 ### Phase 2 完成標準
-- nRF Connect 訂閱 7 條 Display char 全部都有數據流
+- nRF Connect 訂閱 7 條 Display char 全部都有數據流（**若 M3 仍 blocked，MicLevel / LoudAlert 暫不計入**；5 條感測 char + 2 條 control char 即視為 Phase 2 主功能完成）
 - 寫 2 條 Control char 都有反應
 - 連續 30 分鐘不掉線、不需要復位
 
@@ -491,5 +494,73 @@ Milestone 1 已完成（2026-05-30）。後續按 §10.1 「先 serial 再 BLE�
 主文件對應的後續：
 - **Phase 3**：與 RPi server 端整合（RPi 接 §3e SocketIO + Web Dashboard 後直連本韌體）
 - **Phase 4**：多 STM32 節點同時佈署、連線穩定性、（選用）low power
+
+---
+
+## 15. Blocker 紀錄
+
+### 15.1 M3a — DFSDM1_FLT0 在 DMA1_Channel4 上的 request 映射錯誤（2026-05-31）
+
+**症狀**
+- `HAL_DFSDM_FilterRegularStart_DMA(&hdfsdm1_filter0, ...)` 回傳 `HAL_OK`
+- 但 ISR (`HAL_DFSDM_FilterRegConvHalfCpltCallback` / `...CpltCallback`) 完全沒被呼叫
+- AudioTask 持續印 `[mic] no samples (DMA stalled?)`
+
+**診斷（執行 `dump_dfsdm_state()` 在 audio_task.c）**
+
+```
+[diag:after-start]
+  CH0 CHCFGR1=80260000  DFSDMEN=1 CKOUTDIV=38         ← DFSDM 全域開、CKOUT 2.05 MHz ✓
+  CH1 CHCFGR1=00000185  CHEN=1                        ← Channel 1 ✓
+  CH2 CHCFGR1=00000084  CHEN=1                        ← Channel 2 ✓
+  FLT0 CR1=21240001  DFEN=1 RDMAEN=1 RCONT=1 RCH=1    ← Filter 啟用、綁 ch1、DMA enable、continuous ✓
+  FLT0 CR2=00000000  ISR=00FF400A                     ← ISR 的 ROVRF (bit 3) = 1：Filter 產出 data 但沒人讀
+  DMA1 CCR=00000AAF EN=1 HTIE=1 TCIE=1 CIRC=1  CNDTR=800  CSELR.C4S=0
+```
+
+關鍵：
+1. **`CNDTR=800`**（兩次 dump 完全相同 → DMA 完全沒搬資料）
+2. **`FLTISR.ROVRF=1`** → Filter 在產 data，DMA 沒接走，filter 內 overrun
+3. **`CSELR.C4S=0`** → DMA1_Channel4 的 request selector 是 0
+
+**根因**
+- CubeMX 在 `MX_DFSDM1_Init` 的 `HAL_DFSDM_FilterMspInit` 內寫死 `hdma_dfsdm1_flt0.Init.Request = DMA_REQUEST_0`
+- 但 **STM32L475 RM0351 Rev 9 Table 41** 對 DMA1_Channel4 的 8 個 request 映射：
+
+  | C4S | Peripheral |
+  | --- | --- |
+  | 0 | ADC2 |
+  | 1 | SPI2_RX |
+  | 2 | USART1_TX |
+  | 3 | I2C2_RX |
+  | 4 | TIM1_CH4 / TIM1_TRIG / TIM1_COM |
+  | 5 | TIM7_UP / DAC_CH2 |
+  | 6 | SAI1_A |
+  | **7** | **DFSDM1_FLT0** ← 我們要的 |
+
+- 所以 `CSELR.C4S=0` 意味著 DMA 在等 ADC2 的 request，filter 產 data 它根本看不到
+
+**為什麼 CubeMX 會錯**
+猜測 X-CUBE-BLE1 / 純 DFSDM template 的 MSP 預設值是 hard-code 的 `DMA_REQUEST_0`，沒有依 chip 的 DMA mapping 表 query 正確值。X-CUBE-MEMS / X-CUBE-AUDIO 的官方範例會主動 patch 掉，但純 DFSDM template 漏了這一步。CubeMX 內也沒有 user-configurable 的 DMA Request 欄位 — 重 generate 沒用。
+
+**已試過但無效**
+1. `MODIFY_REG(DMA1_CSELR->CSELR, (0xFU<<12), (7U<<12))` 在 `HAL_DFSDM_FilterRegularStart_DMA` 之前直接寫 CSELR → dump 仍顯示 `C4S=0`
+2. `hdma_dfsdm1_flt0.Init.Request = 7U; HAL_DMA_Init(&hdma_dfsdm1_flt0);` 再 PRINTF 立即驗證 → 仍 `C4S=0`
+3. 額外呼 `HAL_DFSDM_FilterMspInit(&hdfsdm1_filter0)`（追加嘗試）→ 反向把 Request 沖回 0（MspInit 內部寫 `Init.Request = DMA_REQUEST_0`）
+
+**還沒試的方向**
+- 移除 audio_task.c 內 `HAL_DFSDM_FilterMspInit` 呼叫，只留 (2) 的兩行，再驗
+- ST-LINK debugger step 進 `HAL_DMA_Init`，確認 line 251 (`DMA1_CSELR->CSELR |= ...`) 是否真的執行、寫入後立即讀回是否仍是 7
+- 試其他 C4S 值（1–6）— 排除 RM 解讀有誤的可能
+- 改用 DFSDM **polling mode**（`HAL_DFSDM_FilterRegularStart` + 在 AudioTask loop 內 `HAL_DFSDM_FilterPollForRegConversion`）—— 慢但完全繞過 CSELR
+- 直接 drop DFSDM mic — `MicLevel` / `LoudAlert` 兩條 char 仍註冊但永遠 0；對主功能無影響
+
+**目前處置**
+- `audio_task.{c,h}` 完整實作仍在 tree 內、會被 build 但 idle
+- AudioTask 每 200 ms 印一行 `[mic] no samples` — 之後恢復時直接接 §15 起點
+- M3 整段暫緩，**下一步直接進 Phase 3（與 RPi server 整合）**，不卡在這
+- 若期末 demo 前麥克風功能很需要，採「直接 drop DFSDM」方案：保留 GATT 表 char、永遠回 0，免得拖延 Phase 3
+
+---
 
 文件結束。如需修改技術選型、GATT 表或任務模型，請在實作前提出討論。
