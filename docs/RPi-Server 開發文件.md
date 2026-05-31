@@ -548,10 +548,13 @@ Phase 3 依子階段拆分實作，目前進度：
 | 3b | Service 層（`user_service` / `device_service` / `channel_service`） | ✅ 完成 |
 | 3c | 認證 blueprint（application factory、Flask-Login、CSRF、register/login/logout、陽春模板） | ✅ 完成 |
 | 3d | Device / Channel CRUD blueprint（裝置/頻道 列表・新增・詳情・刪除，純 POST 表單） | ✅ 完成 |
-| 3e | SocketIO 即時推播 + Jinja2/HTMX 前端 + Chart.js | ⬜ 未開始 |
+| 3e-1 | SocketIO 即時推播接線、`/devices/scan`・`/channels/<id>/write`・`/channels/<id>/history`、Mock 背景產數、HTMX/Chart.js 前端 | ✅ 完成 |
+| 3e-2 | 真實 `BluepyManager` 依平台選用、斷線自動重連、`device_status` 事件（需 RPi 硬體） | ⬜ 未開始 |
 | 4 | 多節點整合測試、systemd 部署 | ⬜ 未開始 |
 
-測試現況：125 unit tests passing、`ruff check` 與 `mypy src`（strict）全綠。
+測試現況：148 unit tests passing、`ruff check` 與 `mypy src`（strict）全綠。
+
+> 3e-1 的設計取捨：SocketIO 採模組級單例 + `init_app`，`create_app` 維持回傳 `Flask`（不動既有測試）；notify→DB→emit 主流程在 3b 已實作，3e-1 以 `services/ble_runtime.py` 接線（連線、訂閱 display 頻道、worker 執行緒短連線寫入）。副作用（背景執行緒、連線）只在 `__main__` 觸發，測試不起執行緒。控制寫入沿用既有 `write_command` 依頻道 `data_format` 編碼（非單一 byte）。前端資產與 Bootstrap 一致採 vendoring。SocketIO 連線要求已登入 session（`connect` 拒絕匿名）；沿用 flat 權限模型，不做 per-user owner 檢查。真實 bluepy 與自動重連留待 3e-2 於 RPi 驗證。
 
 > 3d 的設計取捨：服務接線採 application factory + `app.extensions` 注入（`web/services.py` 提供型別化存取器），開發機注入 `MockBLEManager`；真實 `BluepyManager` 依平台選用、自動重連與 notify subscribe 仍留待 3e。新增/刪除採純 POST 表單（`POST .../delete`）以換取零 JS；HTMX 漸進增強留待 3e。權限沿用 flat 模型（`owner_user_id = current_user`、列表用 `list_all`）。
 
