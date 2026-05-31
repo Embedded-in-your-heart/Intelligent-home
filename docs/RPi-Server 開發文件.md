@@ -489,6 +489,7 @@ def logged_in_client(client): ...  # 已登入的 client
 | `HOME_SERVER_LOG_LEVEL` | `INFO` | logging level |
 | `HOME_SERVER_BLE_SCAN_DURATION` | `5.0` | 預設掃描秒數 |
 | `HOME_SERVER_READING_MIN_INTERVAL` | `1.0` | DB 寫入限頻（秒） |
+| `HOME_SERVER_BLE_BACKEND` | `auto` | BLE backend 選用：`auto`/`mock`/`bluepy` |
 
 ---
 
@@ -549,12 +550,14 @@ Phase 3 依子階段拆分實作，目前進度：
 | 3c | 認證 blueprint（application factory、Flask-Login、CSRF、register/login/logout、陽春模板） | ✅ 完成 |
 | 3d | Device / Channel CRUD blueprint（裝置/頻道 列表・新增・詳情・刪除，純 POST 表單） | ✅ 完成 |
 | 3e-1 | SocketIO 即時推播接線、`/devices/scan`・`/channels/<id>/write`・`/channels/<id>/history`、Mock 背景產數、HTMX/Chart.js 前端 | ✅ 完成 |
-| 3e-2 | 真實 `BluepyManager` 依平台選用、斷線自動重連、`device_status` 事件（需 RPi 硬體） | ⬜ 未開始 |
+| 3e-2 | 真實 `BluepyManager` 依平台選用、斷線自動重連、`device_status` 事件 | ✅ 完成（mock 單元測試；真硬體待 RPi 冷煙） |
 | 4 | 多節點整合測試、systemd 部署 | ⬜ 未開始 |
 
-測試現況：148 unit tests passing、`ruff check` 與 `mypy src`（strict）全綠。
+測試現況：167 unit tests passing、`ruff check` 與 `mypy src`（strict）全綠。
 
 > 3e-1 的設計取捨：SocketIO 採模組級單例 + `init_app`，`create_app` 維持回傳 `Flask`（不動既有測試）；notify→DB→emit 主流程在 3b 已實作，3e-1 以 `services/ble_runtime.py` 接線（連線、訂閱 display 頻道、worker 執行緒短連線寫入）。副作用（背景執行緒、連線）只在 `__main__` 觸發，測試不起執行緒。控制寫入沿用既有 `write_command` 依頻道 `data_format` 編碼（非單一 byte）。前端資產與 Bootstrap 一致採 vendoring。SocketIO 連線要求已登入 session（`connect` 拒絕匿名）；沿用 flat 權限模型，不做 per-user owner 檢查。真實 bluepy 與自動重連留待 3e-2 於 RPi 驗證。
+
+> 3e-2 的設計取捨：BLE backend 由 `HOME_SERVER_BLE_BACKEND=auto|mock|bluepy` 選用（`ble/selection.py` 純函式 + bluepy 延遲匯入；auto 在非 Linux 或 bluepy 不可用時 fallback mock）。重連擴充 `BleRuntime`（輪詢 `is_connected` + 指數退避 1→60s + `_bring_up_device` 重新訂閱 display 頻道），偵測機制對 mock/bluepy 一致、`_monitor_tick(now)` 可同步測試；副作用（執行緒、連線）只在 `__main__`。`device_status` 經 SocketIO 廣播、僅狀態轉變才 emit，前端每裝置徽章（server-render 初值 + 即時更新）。真 STM32 + bluepy 整合為 RPi 手動冷煙，不在自動化範圍。
 
 > 3d 的設計取捨：服務接線採 application factory + `app.extensions` 注入（`web/services.py` 提供型別化存取器），開發機注入 `MockBLEManager`；真實 `BluepyManager` 依平台選用、自動重連與 notify subscribe 仍留待 3e。新增/刪除採純 POST 表單（`POST .../delete`）以換取零 JS；HTMX 漸進增強留待 3e。權限沿用 flat 模型（`owner_user_id = current_user`、列表用 `list_all`）。
 
