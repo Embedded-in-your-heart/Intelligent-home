@@ -181,7 +181,7 @@
 | 事件 | 觸發條件 | 反跳 |
 | --- | --- | --- |
 | MotionAlert=1 | `AccelMagnitude > 1.8 g` 或 `GyroMagnitude > 250 dps` | 連續 ≥ 100 ms 才觸發；事件結束後鎖 1 s 不重複觸發 |
-| LoudAlert=1 | `MicLevel > 800`（正規化）| 連續 ≥ 200 ms 才觸發；事件結束後鎖 1 s |
+| LoudAlert=1 | `MicLevel > 400`（正規化，2026-05-31 實機校正）| 連續 ≥ 200 ms 才觸發；事件結束後鎖 1 s |
 
 > 門檻為 v1 預估值；正式調校在 Phase 1 驗證時進行。門檻定義在韌體常數，不開放動態調整（簡化 GATT 表；之後可加 `MotionThreshold` characteristic）。
 
@@ -394,8 +394,9 @@ Intelligent-home-STM32-client/
 | **M2a** | X-CUBE-MEMS1 + X-CUBE-ALGOBUILD generate（含 HTS221/LSM6DSL component driver + CMSIS-DSP） | ✅（2026-05-31） |
 | **M2a** | `sensor_task.c` + SensorTask 4 Hz 採集（走 BSP_I2C2 + component driver），USART1 印解碼值 | ✅（2026-05-31 驗證：室溫合理、握住升溫、搖晃 accel 跳、靜止 gyro 近零） |
 | **M2b** | `notify_queue.{c,h}` + SensorTask 推 NotifyQueue + BleTask `NotifyQueue_Pump()` + MotionAlert 100 ms hold / 1 s lockout | ✅（2026-05-31 驗證：nRF Connect 訂閱所有 5 條感測 char 看到資料流） |
-| **M3a** | DFSDM DMA 啟動 + RMS 計算，`audio_task.c` 印 mic 能量 | ⚠️ **受阻** — DMA request 映射錯，詳見 §15 |
-| **M3b** | MicLevel / LoudAlert BLE 推播 | ⬜ 受阻於 M3a |
+| **M3a** | `audio_task.c` 用 **polling 模式**（`HAL_DFSDM_FilterPollForRegConversion`）每 200 ms 取 80 樣本 burst 算 RMS，印 mic 能量 | ✅（2026-05-31 驗證：安靜 rms≈0、大聲說話 rms 100–130；mic 硬體確認健康，§15.2.6）|
+| **M3a-DMA** | 原規劃 DMA + ISR 累加路徑 | ⚠️ 受阻於 CSELR 映射 bug，詳見 §15.1；polling 方案頂用，DMA 降級成 Phase 4 效能優化 |
+| **M3b** | 推 NotifyQueue → `MicLevel` (`rms × 8`, clamp 0..1023) + LoudAlert 200 ms hold / 1 s lockout（門檻 400）| ✅（2026-05-31 驗證：nRF Connect 訂閱 MicLevel 跟拍手 / 說話變動、LoudAlert 觸發/清除正常）|
 | **M4** | `Attribute_Modified_CB` 內驅動 PA5 GPIO；ControlFlag 持久化 | ✅（2026-05-31 驗證：nRF Connect 寫 0x01 LED 亮、0x00 熄滅、ControlFlag echo） |
 | Phase 3 | 與 RPi 端整合測試 | ⬜ |
 | Phase 4 | 多節點、連線穩定性、（選用）low power | ⬜ |
@@ -462,7 +463,7 @@ Milestone 1 已完成（2026-05-30）。後續按 §10.1 「先 serial 再 BLE�
 
 ### Milestone 3 — 麥克風
 
-> ⚠️ **狀態：暫緩（2026-05-31）**。3a 卡在 DFSDM1_FLT0 ↔ DMA1_Channel4 的 CSELR 映射，詳見 §15。下面內容保留為原規劃，恢復時參考。
+> ✅ **狀態：以 polling 路徑完成（2026-05-31）**。原規劃的 DMA 走法卡在 CSELR 映射 bug（§15.1），改用 `HAL_DFSDM_FilterPollForRegConversion` 每 200 ms 取 80 樣本 burst 算 RMS 後推 BLE，量到的數值跟拍手 / 說話符合預期。DMA 路徑降級成 Phase 4 效能優化（CPU 從 ~5% 降到接近 0%、取樣覆蓋率從 5% 拉到 100%），不再是 blocker。下方原規劃保留供 Phase 4 啟動 DMA 時參考。
 
 **3a：Serial 驗證**
 - 新增 `BlueNRG_MS/App/audio_task.{c,h}`：FreeRTOS task（osPriorityNormal, 1 KB stack）
@@ -473,7 +474,7 @@ Milestone 1 已完成（2026-05-30）。後續按 §10.1 「先 serial 再 BLE�
 
 **3b：BLE 串接**
 - 正規化：`MicLevel = clamp(round(rms / scale), 0, 1023)`，`scale` 用 3a 抓的 baseline 校
-- LoudAlert：`MicLevel > 800` 連續 ≥ 200 ms（同 §5.5）
+- LoudAlert：`MicLevel > 400` 連續 ≥ 200 ms（同 §5.5；門檻已實機校正）
 - 推 NotifyQueue → BleTask
 - **驗證**：nRF Connect 訂閱 MicLevel 看到 200 ms 級數值流；拍手觸發 LoudAlert
 
@@ -555,11 +556,209 @@ Milestone 1 已完成（2026-05-30）。後續按 §10.1 「先 serial 再 BLE�
 - 改用 DFSDM **polling mode**（`HAL_DFSDM_FilterRegularStart` + 在 AudioTask loop 內 `HAL_DFSDM_FilterPollForRegConversion`）—— 慢但完全繞過 CSELR
 - 直接 drop DFSDM mic — `MicLevel` / `LoudAlert` 兩條 char 仍註冊但永遠 0；對主功能無影響
 
-**目前處置**
-- `audio_task.{c,h}` 完整實作仍在 tree 內、會被 build 但 idle
-- AudioTask 每 200 ms 印一行 `[mic] no samples` — 之後恢復時直接接 §15 起點
-- M3 整段暫緩，**下一步直接進 Phase 3（與 RPi server 整合）**，不卡在這
-- 若期末 demo 前麥克風功能很需要，採「直接 drop DFSDM」方案：保留 GATT 表 char、永遠回 0，免得拖延 Phase 3
+**目前處置（2026-05-31 更新）**
+- M3 已**改用 polling 路徑**完成（`audio_task.c` 用 `HAL_DFSDM_FilterPollForRegConversion`），MicLevel 與 LoudAlert 兩條 BLE char 都正常推播
+- Mic 硬體在 polling 模式下確認健康（安靜 rms≈0、loud speech rms ~100–130；§15.2.6）
+- DMA bug 仍然存在但 **降級為 Phase 4 效能優化項目**（不再 blocker）：
+  - polling 成本：CPU ~5%、取樣覆蓋率 ~5%（每 200 ms 取 10 ms）
+  - DMA 修好可降到 CPU 接近 0%、覆蓋率 100%
+- 修 DMA 的工作底稿仍在 §15.2.8，將來 Phase 4 啟動時直接照那個順序排除
+
+### 15.2 MP34DT01 / DFSDM / DMA 通訊鏈技術參考
+
+> 將來恢復 M3 時的工作底稿：協定、接線、暫存器層已確認 vs 待確認、測試順序。
+
+#### 15.2.1 板子釐清
+
+我們手上是 **B-L475E-IOT01A（STM32L475VG）**。**B-L4S5I-IOT01A（STM32L4S5VI / L4+）** 是新版，用 **DMAMUX**（非 CSELR）— §15.1 的 `DMA_REQUEST_0` 對 ADC2 的 bug 在 L4+ 上不存在（因為 `DMA_REQUEST_DFSDM1_FLT0` 是 named constant）。若改用 L4S5I 板，本節絕大部分技術描述仍適用，僅 DMA request 映射段落不適用。
+
+#### 15.2.2 MP34DT01 通訊協定（PDM）
+
+- **輸出格式**：PDM (Pulse-Density Modulation) — 單線、單 bit、過取樣
+- 0/1 密度比 ≈ 瞬時振幅；**必須經 decimation filter 還原為 PCM**
+- 時脈範圍：**1 – 3.25 MHz**（典型 2.4 MHz，我們用 2.05 MHz）
+- 取樣率公式：`fs = CKOUT / (FOSR × IOSR)` → `2.05M / 256 ≈ 8 kHz`
+
+| Pin（mic 側）| 方向 | 說明 |
+| --- | --- | --- |
+| CLK | MCU → mic | PDM 時脈 |
+| DOUT | mic → MCU | PDM 1-bit 資料，與 CLK 同步 |
+| L/R | 板上固定 | B-L475E-IOT01A 上接 GND → 左聲道、上升緣輸出 |
+
+#### 15.2.3 GPIO 接線（B-L475E-IOT01A 板載 routing）
+
+| Pin | 信號 | AF | mode / speed / pull |
+| --- | --- | --- | --- |
+| **PE7** | `DFSDM1_DATIN2`（mic DOUT）| AF6 | `AF_PP`, LOW, `NOPULL` |
+| **PE9** | `DFSDM1_CKOUT`（mic CLK）| AF6 | `AF_PP`, LOW, `NOPULL` |
+
+> 注意：PE7 是 **Channel 2** 的 data input pin，不是 Channel 1。Channel 1 透過 `Pins=FOLLOWING_CHANNEL_PINS` 從 Channel 2 的 pin 取資料 — PDM 在 DFSDM 上的標準對位。
+
+#### 15.2.4 DFSDM channel routing
+
+```
+            ┌────────────────────────────────────────────────┐
+            │                  DFSDM1                         │
+            │                                                 │
+PE9  ◀──────┤ CKOUT  (divider 39 from 80 MHz APB → 2.05 MHz)  │
+            │                                                 │
+PE7  ──────▶┤ DATIN2 ──→  Channel 2  (rising edge)  ─┐         │
+            │                                        │         │
+            │              Channel 1                 ├──→ Filter 0 ──→ FLTRDATAR
+            │              (falling edge, takes      │                  (24-bit signed
+            │               data from Ch2's pin)     │                   in bits [31:8])
+            │                                                 │
+            └─────────────────────────────────────────────────┘
+```
+
+關鍵設定（取自 `Core/Src/dfsdm.c`）：
+
+| 項目 | 值 | 作用 |
+| --- | --- | --- |
+| `Ch1.Input.Multiplexer` | `EXTERNAL_INPUTS` | 從外部 pin 取 |
+| `Ch1.Input.Pins` | `FOLLOWING_CHANNEL_PINS` | 從 Ch2 的 pin (PE7) 拿 |
+| `Ch1.SerialInterface.Type` | `SPI_FALLING` | CKOUT 下降緣 sample |
+| `Ch1.SerialInterface.SpiClock` | `INTERNAL` | 用 CKOUT 當 SPI clock |
+| `Ch2.Input.Pins` | `SAME_CHANNEL_PINS` | 用自己的 pin (PE7) |
+| `Ch2.SerialInterface.Type` | `SPI_RISING` | CKOUT 上升緣 sample（PDM 主路徑）|
+| `Filter0.RegularParam.Trigger` | `SW_TRIGGER` | 啟動時靠 RSWSTART |
+| `Filter0.RegularParam.DmaMode` | `ENABLE` | 設 FLTCR1.RDMAEN |
+| `Filter0.FilterParam.SincOrder` | `SINC3_ORDER` | |
+| `Filter0.FilterParam.Oversampling` | 16 | FOSR |
+| `Filter0.FilterParam.IntOversampling` | 16 | IOSR |
+| `Filter0 ConfigRegChannel` | `(filter0, CHANNEL_1, CONTINUOUS_CONV_ON)` | RCH=1、RCONT=1 |
+
+> Ch1 + Ch2 **都要 enable**（CHEN bit）。Ch2 即使資料不被 Filter 直接讀，**它的 pin (PE7) 才是 mic 真正接到的點**。
+
+#### 15.2.5 DMA 路徑
+
+```
+Filter 0 完成一次 conversion
+        │
+        ▼
+FLTRDATAR (24-bit signed in bits [31:8])
+        │
+        ▼
+DFSDM raise "FLT0 conversion complete" → DMA request 訊號
+        │                              ▲
+        │  ┌───────────────────────────┘
+        │  │
+        │  │ 等的是「CSELR.C4S 指定的那個 peripheral」的 request
+        ▼  │
+   DMA1_Channel4  (★ §15.1 BUG: CSELR.C4S=0 → 在等 ADC2 而非 DFSDM1_FLT0)
+        │
+        │ (若 C4S 對 → transfer 觸發)
+        ▼
+   讀 FLTRDATAR → 寫 dma_buf[idx];  CNDTR--;  idx++
+        │
+        ▼
+   到半 buffer (400 word) → fire HTIE → DMA1_Channel4_IRQHandler
+   到全 buffer (800 word) → fire TCIE → DMA1_Channel4_IRQHandler
+        │
+        ▼
+   HAL_DMA_IRQHandler → XferHalfCpltCallback / XferCpltCallback
+        │
+        ▼
+   HAL_DFSDM_FilterRegConv{Half}CpltCallback
+        │ (audio_task.c override)
+        ▼
+   accumulate_half() → ISR 平方累加 acc_sumsq / acc_count
+```
+
+#### 15.2.6 已確認 OK 部位（暫存器值，2026-05-31 dump）
+
+| 層 | 暫存器 / 位元 | 觀測值 | 評估 |
+| --- | --- | --- | --- |
+| DFSDM 全域 | `CH0.DFSDMEN` (bit 31) | 1 | ✅ Peripheral 通電 |
+| CKOUT 時脈分頻 | `CH0.CKOUTDIV` (bits [23:16]) | 38 | ✅ 80 MHz / 39 ≈ 2.05 MHz |
+| Channel 1 啟用 | `CH1.CHEN` (bit 7) | 1 | ✅ |
+| Channel 2 啟用 | `CH2.CHEN` (bit 7) | 1 | ✅ |
+| Filter 啟用 | `FLT0.DFEN` (bit 0) | 1 | ✅ |
+| Filter → DMA | `FLT0.RDMAEN` (bit 21) | 1 | ✅ |
+| Filter 連續轉換 | `FLT0.RCONT` (bit 18) | 1 | ✅ |
+| Filter regular channel | `FLT0.RCH` (bits [26:24]) | 1 | ✅ 綁 Ch1 |
+| Filter fast mode | `FLT0.FAST` (bit 29) | 1 | ✅ |
+| **Filter 真的在產 data** | `FLTISR.REOCF` (bit 1) | 1 | ✅ 有 sample ready |
+| DMA channel 啟用 | `DMA1_Ch4.CCR.EN` (bit 0) | 1 | ✅ |
+| DMA 半完成中斷 | `DMA1_Ch4.CCR.HTIE` (bit 2) | 1 | ✅ |
+| DMA 完成中斷 | `DMA1_Ch4.CCR.TCIE` (bit 1) | 1 | ✅ |
+| DMA Circular | `DMA1_Ch4.CCR.CIRC` (bit 5) | 1 | ✅ |
+| DMA 資料寬度 | `CCR.PSIZE/MSIZE` | 32 / 32 | ✅ |
+| DMA mem auto-inc | `CCR.MINC` (bit 7) | 1 | ✅ |
+| GPIO PE7/PE9 AF6 | (MspInit 已執行；filter init 成功推論)| — | ✅ |
+| DMA1 clock | `MX_DMA_Init` 內 `__HAL_RCC_DMA1_CLK_ENABLE` | — | ✅ |
+| NVIC DMA1_Ch4 | `MX_DMA_Init` priority 6 | — | ✅ |
+
+#### 15.2.7 可疑 / 未實機確認部位
+
+| 部位 | 觀察 | 可疑原因 |
+| --- | --- | --- |
+| **`CSELR.C4S = 0`**（應為 7）| §15.1 鐵證 | CubeMX template hardcode `DMA_REQUEST_0` |
+| `FLTISR.ROVRF=1` (bit 3) | regular overrun | Filter 產 data 但 DMA 沒讀（CSELR 錯的直接後果）|
+| `FLTISR` 高 byte = 0xFF（bits [23:16] = CKABF[7:0]）| 多 channel clock-absence flag | sticky bit / 啟動 transient / 真有 clock 異常 — 任一可能，**未實機驗** |
+| **PE9 CKOUT 實際波形** | 未量 | 軟體邏輯正確，但**無 scope 量過**；可能 CKOUT 根本沒輸出 |
+| **PE7 DOUT 實際波形** | 未量 | 若 CKOUT 不出，mic 不吐 data；需 scope 看 PE7 是否有 1/0 切換 |
+| GPIO speed `LOW` | CubeMX 預設 | 對 2 MHz CKOUT 邊緣略弱（不致命，可改 MEDIUM 改善穩定度）|
+| Mic 供電 | always-on（板上設計）| 未實測；若板子焊接有問題、VCC rail 異常都會無聲 |
+| L/R select pin | 應接 GND | 未實測腳位電位 |
+
+#### 15.2.8 將來恢復 M3 的測試順序
+
+照「先軟體再硬體」的逐步排除：
+
+**Step 1 — 修 CSELR.C4S（純軟體）**
+
+按 GitHub Issue #1 第一條：拿掉 `audio_task.c` 內額外的 `HAL_DFSDM_FilterMspInit` 呼叫，只留：
+
+```c
+hdma_dfsdm1_flt0.Init.Request = 7U;
+HAL_DMA_Init(&hdma_dfsdm1_flt0);
+```
+
+驗 `[patch]` PRINTF 顯示 `C4S=7`。
+
+**Step 2 — Step 1 修好但仍無資料 → 量 PE9 CKOUT**
+
+```
+scope / logic analyzer on PE9:
+  期望：穩定 2.05 MHz 方波，duty ~50%
+  若無      → CKOUT 沒輸出，查 CH0.CKOUTSRC / Activation / DFSDMEN
+  若頻率怪  → CKOUTDIV 寫錯
+```
+
+**Step 3 — CKOUT OK 但 mic 不吐 data → 量 PE7 DOUT**
+
+```
+scope on PE7:
+  安靜環境：密集 1/0 切換，接近 50/50（零振幅）
+  拍手    ：1/0 密度明顯偏移
+  卡固定值：mic 死掉 / VCC 沒接 / L/R 腳問題
+  與 PE9 無關：mic 沒收到 CKOUT
+```
+
+**Step 4 — 硬體 OK 但 DFSDM 解不出 data → 改 polling 排除 DMA**
+
+```c
+HAL_DFSDM_FilterRegularStart(&hdfsdm1_filter0);
+for (;;) {
+    if (HAL_DFSDM_FilterPollForRegConversion(&hdfsdm1_filter0, 100) == HAL_OK) {
+        uint32_t ch;
+        int32_t v = HAL_DFSDM_FilterGetRegularValue(&hdfsdm1_filter0, &ch);
+        PRINTF("mic = %ld\n", (long)(v >> 8));
+    }
+}
+```
+
+若 polling 拿到合理值 → 100% 鎖定問題只在 DMA / CSELR。
+
+**Step 5 — Polling OK 再切回 DMA + Step 1 patch**
+
+驗 CNDTR 真的會掉、ISR 真的進來。
+
+#### 15.2.9 ~~快速 demo drop 方案~~ — 已不適用（2026-05-31）
+
+> 原規劃在 M3 卡死時把 `MicLevel`/`LoudAlert` 都推 0。實際我們找到了 **polling 路徑**直接取得真實資料，不必 drop。此節保留紀錄用，本專案不採用。
+- 文件標 future work
 
 ---
 
