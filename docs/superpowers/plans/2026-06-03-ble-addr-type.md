@@ -33,14 +33,14 @@
 | `src/home_server/ble/interface.py` | `DiscoveredDevice.addr_type` + `connect` 簽名 | 修改 |
 | `src/home_server/ble/mock_manager.py` | `connect(addr_type)` + `connect_calls` 記錄 | 修改 |
 | `tests/test_mock_manager.py` | mock connect 記錄 addr_type | 修改 |
-| `src/home_server/services/device_service.py` | `add_device(addr_type=None)` 推斷 + 穿透 | 修改 |
-| `tests/test_device_service.py` | 推斷 / 顯式 / 穿透至 connect | 修改 |
+| `src/home_server/services/device_service.py` | `add_device(addr_type=None)` 推斷 + 穿透；`scan()` 過濾 `HOME-` 名稱前綴 | 修改 |
+| `tests/test_device_service.py` | 推斷 / 顯式 / 穿透至 connect；scan `HOME-` 過濾 | 修改 |
 | `src/home_server/services/ble_runtime.py` | `_bring_up_device` 傳 `device.addr_type` | 修改 |
 | `tests/test_ble_runtime.py` | activate 用 device.addr_type 連線 | 修改 |
 | `src/home_server/ble/bluepy_manager.py` | start_scan 帶 addrType；connect + worker | 修改（檢視驗證） |
 | `src/home_server/web/devices.py` | `AddDeviceForm` hidden `addr_type` + handler | 修改 |
 | `src/home_server/web/templates/devices/_scan_results.html` | 每列 hidden `addr_type` | 修改 |
-| `tests/test_web_devices.py` | 表單帶/不帶 addr_type；scan 模板含 hidden | 修改 |
+| `tests/test_web_devices.py` | 表單帶/不帶 addr_type；scan 模板含 hidden；scan 名稱改 `HOME-`（T6） | 修改 |
 
 ---
 
@@ -561,7 +561,94 @@ git commit -m "feat(device): infer addr_type on add and pass it to connect"
 
 ---
 
-### Task 6: `ble_runtime._bring_up_device` 傳 `device.addr_type`
+### Task 6: Scan 結果過濾（廣播名稱須以 `HOME-` 開頭）
+
+**Files:**
+- Modify: `src/home_server/services/device_service.py`（`scan`）
+- Test: `tests/test_device_service.py`、`tests/test_web_devices.py`（更新既有 scan 測試）
+
+> 過濾落在服務層 `DeviceService.scan()`：只回傳「廣播名稱以 `HOME-` 開頭」的裝置；無名稱（`None`）排除；**大小寫敏感**（`home-` 不符）。BLE manager 仍回傳全部，過濾點唯一。
+
+- [ ] **Step 1: 改既有 + 寫新 failing 測試**
+
+`tests/test_device_service.py`：把既有 `test_scan_returns_devices` 的名稱改為 `HOME-` 前綴，並新增過濾測試：
+```python
+def test_scan_returns_devices(db_conn) -> None:
+    mock = MockBLEManager(scan_results=[DiscoveredDevice(ADDR, "HOME-STM32", -50)])
+    svc = DeviceService(mock)
+    found = svc.scan(5.0)
+    assert found == [DiscoveredDevice(ADDR, "HOME-STM32", -50)]
+    assert mock.scan_calls == [5.0]
+
+
+def test_scan_filters_out_non_home_and_unnamed(db_conn) -> None:
+    mock = MockBLEManager(
+        scan_results=[
+            DiscoveredDevice("AA:BB:CC:DD:EE:01", "HOME-Light", -40),
+            DiscoveredDevice("AA:BB:CC:DD:EE:02", "Other", -50),
+            DiscoveredDevice("AA:BB:CC:DD:EE:03", None, -60),
+            DiscoveredDevice("AA:BB:CC:DD:EE:04", "home-light", -70),  # case-sensitive
+        ]
+    )
+    svc = DeviceService(mock)
+    found = svc.scan(5.0)
+    assert [d.name for d in found] == ["HOME-Light"]
+```
+
+`tests/test_web_devices.py`：把既有 `test_scan_lists_discovered_devices` 的 scan 名稱改為 `HOME-` 前綴：
+```python
+def test_scan_lists_discovered_devices(
+    logged_in_client: FlaskClient, mock_ble
+) -> None:
+    mock_ble.scan_results = [
+        DiscoveredDevice(address="11:22:33:44:55:66", name="HOME-Node-A", rssi=-50)
+    ]
+    resp = logged_in_client.get("/devices/scan")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "11:22:33:44:55:66" in body
+    assert "HOME-Node-A" in body
+```
+
+- [ ] **Step 2: 跑測試確認 fail**
+
+Run: `uv run pytest tests/test_device_service.py::test_scan_filters_out_non_home_and_unnamed -v`
+Expected: FAIL（目前 `scan` 不過濾，回傳 4 筆）
+
+- [ ] **Step 3: 實作過濾**
+
+`src/home_server/services/device_service.py`：模組層（`_MAC_RE` 附近）加常數，`scan` 改為過濾：
+```python
+# Only devices advertising a name with this prefix are surfaced by scan.
+_REQUIRED_NAME_PREFIX = "HOME-"
+```
+```python
+    def scan(self, duration_s: float) -> list[DiscoveredDevice]:
+        found = self._ble.start_scan(duration_s)
+        return [
+            d
+            for d in found
+            if d.name is not None and d.name.startswith(_REQUIRED_NAME_PREFIX)
+        ]
+```
+
+- [ ] **Step 4: 跑測試確認 pass**
+
+Run: `uv run pytest tests/test_device_service.py tests/test_web_devices.py -v`
+Expected: PASS
+Run: `uv run pytest -q`
+Expected: 全綠（若另有使用非 `HOME-` 名稱的 scan 測試失敗，將其 `scan_results` 名稱改為 `HOME-` 前綴後再跑）
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/home_server/services/device_service.py tests/test_device_service.py tests/test_web_devices.py
+git commit -m "feat(device): scan only surfaces devices named with the HOME- prefix"
+```
+
+---
+
+### Task 7: `ble_runtime._bring_up_device` 傳 `device.addr_type`
 
 **Files:**
 - Modify: `src/home_server/services/ble_runtime.py`（`_bring_up_device`）
@@ -617,7 +704,7 @@ git commit -m "feat(runtime): connect using each device's stored addr_type"
 
 ---
 
-### Task 7: `bluepy_manager` 接線（檢視驗證，macOS 不測）
+### Task 8: `bluepy_manager` 接線（檢視驗證，macOS 不測）
 
 **Files:**
 - Modify: `src/home_server/ble/bluepy_manager.py`（`start_scan`、`connect`、`_PeripheralWorker`）
@@ -702,7 +789,7 @@ git commit -m "feat(ble): connect bluepy peripherals with the resolved addr_type
 
 ---
 
-### Task 8: Web 層 — scan 模板 hidden 欄位 + 表單 + handler
+### Task 9: Web 層 — scan 模板 hidden 欄位 + 表單 + handler
 
 **Files:**
 - Modify: `src/home_server/web/devices.py`（`AddDeviceForm`、`list_devices`）
@@ -763,7 +850,7 @@ def test_scan_results_include_addr_type_hidden_input(
 ) -> None:
     mock_ble.scan_results = [
         DiscoveredDevice(
-            address="f6:8c:f2:d3:ea:e7", name="N", rssi=-40, addr_type="random"
+            address="f6:8c:f2:d3:ea:e7", name="HOME-N", rssi=-40, addr_type="random"
         )
     ]
     body = logged_in_client.get("/devices/scan").get_data(as_text=True)
@@ -822,7 +909,7 @@ git commit -m "feat(web): carry scanned addr_type through the add-device form"
 
 ---
 
-### Task 9: 全量驗證（lint + typecheck + test）
+### Task 10: 全量驗證（lint + typecheck + test）
 
 **Files:** 無（驗證）
 
@@ -860,6 +947,6 @@ Expected: 全綠
 
 ## Self-Review 紀錄
 
-- **Spec coverage**：address.py(T1)、DiscoveredDevice/connect(T4)、schema+Device+create(T2)、migration(T3)、add_device 推斷(T5)、ble_runtime(T6)、bluepy worker(T7)、web 模板/表單(T8)、測試與全綠(T9) —— 對應 spec §3–§5 全覆蓋。
+- **Spec coverage**：address.py(T1)、DiscoveredDevice/connect(T4)、schema+Device+create(T2)、migration(T3)、add_device 推斷(T5)、scan `HOME-` 過濾(T6)、ble_runtime(T7)、bluepy worker(T8)、web 模板/表單(T9)、測試與全綠(T10) —— 對應 spec §3–§5 全覆蓋（scan 過濾為新增需求，見 spec §3.6）。
 - **Placeholder**：無 TBD/TODO；每個 code step 皆含完整程式碼。
 - **Type 一致**：`addr_type: str` 全程字串 `"public"`/`"random"`；`connect(address, addr_type="public")` 於 interface/mock/bluepy/呼叫端一致；`Device.addr_type`/`DiscoveredDevice.addr_type`/`devices.create(addr_type=)`/`add_device(addr_type=)`/`apply_migrations` 名稱一致；`connect_calls: list[tuple[str, str]]` 一致。

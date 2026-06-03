@@ -21,6 +21,7 @@
 - `DiscoveredDevice` 新增 `addr_type`，`BluepyManager.start_scan` 自 `ScanEntry.addrType` 帶出。
 - `devices` 資料表新增 `addr_type` 欄；`connection.initialize()` 一次性守衛式 migration（補欄 + 用推斷 backfill 既有列）。
 - `Device` / `devices.create` / `device_service.add_device` / `BLEManager.connect` 簽名 / `BluepyManager` worker / `ble_runtime` 連線呼叫點 / scan 模板 + 表單，逐一接線。
+- **Scan 結果過濾**（追加需求）：`DeviceService.scan()` 只回傳廣播名稱以 `HOME-` 開頭的裝置。
 
 ### 1.2 範圍外（YAGNI）
 
@@ -95,6 +96,23 @@ if "addr_type" not in cols:
 
 `add_device(..., addr_type: str | None = None)`；`None` → `infer_addr_type(address)`。手動表單（無型別）走推斷；scan 路徑帶權威值穿透。
 
+### 3.6 Scan 名稱過濾（追加需求）：`DeviceService.scan()`
+
+只回傳廣播名稱以 `HOME-` 開頭的裝置：
+
+```python
+_REQUIRED_NAME_PREFIX = "HOME-"
+
+def scan(self, duration_s: float) -> list[DiscoveredDevice]:
+    found = self._ble.start_scan(duration_s)
+    return [
+        d for d in found
+        if d.name is not None and d.name.startswith(_REQUIRED_NAME_PREFIX)
+    ]
+```
+
+落在服務層（非 BLE manager），故 mock 可測；無名稱（`None`）排除；**大小寫敏感**（`home-` 不符）。前綴以模組常數表示，不做成設定（YAGNI）。
+
 ---
 
 ## 4. 改動清單（逐檔）
@@ -108,7 +126,7 @@ if "addr_type" not in cols:
 | `db/schema.sql` | `devices` 加 `addr_type TEXT NOT NULL DEFAULT 'public' CHECK(...)` |
 | `db/connection.py` | `initialize()` 守衛式 migration + 推斷 backfill |
 | `db/devices.py` | `Device` 加 `addr_type`；`from_row` 讀；`create(..., addr_type)` 寫 |
-| `services/device_service.py` | `add_device(..., addr_type=None)` 推斷 + 傳給 `create` 與 `connect` |
+| `services/device_service.py` | `add_device(..., addr_type=None)` 推斷 + 傳給 `create` 與 `connect`；`scan()` 過濾 `HOME-` 名稱前綴（§3.6） |
 | `services/ble_runtime.py` | 所有 `connect(device.address)` → `connect(device.address, device.addr_type)` |
 | `web/devices.py` | `AddDeviceForm` 加 hidden `addr_type`；POST handler 傳 `addr_type=form.addr_type.data or None` |
 | `web/templates/devices/_scan_results.html` | 每列加 `<input type="hidden" name="addr_type" value="{{ d.addr_type }}">` |
@@ -121,6 +139,7 @@ if "addr_type" not in cols:
 - `db.devices`：`create` + `from_row` round-trip `addr_type`。
 - migration：以舊 schema（無 `addr_type` 欄）建 DB 並插入 `f6:…` 列 → `initialize()` 後欄位存在且該列 `addr_type=random`；重複呼叫 `initialize()` 不覆寫。
 - `device_service.add_device`：未給 → 推斷；給定 → 穿透；斷言 `MockBLEManager` 記錄的 `connect` `addr_type` 正確。
+- `device_service.scan`：只回傳 `HOME-` 前綴裝置；排除非 `HOME-`、無名稱、大小寫不符；既有 scan 測試（`test_device_service` / `test_web_devices`）更新為 `HOME-` 名稱。
 - `ruff` / `mypy --strict` 全綠。
 - **不在本機測**：`_PeripheralWorker` 的 `addrType` 接線（bluepy 僅 Linux）——靠檢視 + RPi 上機冷煙。
 
