@@ -141,3 +141,39 @@ class PeriodicWorker:
 
 - 程式碼變更於 submodule `Intelligent-home-RPi-server`，開 feature 分支、小步提交。
 - 本設計文件提交於 parent repo `docs/superpowers/specs/`。
+
+---
+
+# 附錄：B2 connect() 拆分契約（後續實作）
+
+B1 完成後，使用者要求繼續做先前範圍外的 B2。實作前重新審視測試，發現純 B2-ii（activate 改非阻塞、訂閱全交給 monitor）會打爛 `test_ble_runtime.py` 的 4 個測試——它們鎖定「`activate()` 必須同步 `connect()`（斷言 `connect_calls`）並立即訂閱 display（無 monitor tick）」。因此採用對齊測試、聚焦真正價值（**monitor 不再阻塞**）的 B2：
+
+## B2.1 目標
+
+現況下，reconnect monitor 的 `_bring_up_device` 會呼叫阻塞式 `connect()`：powered-off 裝置每次重連嘗試會卡住 monitor 背景執行緒最多 `op_timeout`（10s），多裝置時序列化、延誤其他裝置的狀態更新。B2 讓 monitor 改用非阻塞路徑，永不卡住。
+
+## B2.2 設計
+
+- **`BLEManager.connect`**：契約改為**誠實同步**——阻塞至連上，連不上於 timeout 內拋 `ConnectionError`。docstring 同步更新。`add_device` / `activate` 用它。
+- **新增 `BLEManager.ensure_connecting(address, addr_type) -> None`**：**非阻塞**，確保有 worker 正在嘗試/維持連線後立即返回；呼叫端輪詢 `is_connected()`。reconnect monitor 用它。
+- **`BluepyManager`**：
+  - `connect()` 一律 `wait_until_connected`（移除 B1 的「reused worker 立即返回」分支；`_ensure_worker` 簡化為只回傳 worker）。
+  - `ensure_connecting()` 只呼叫 `_ensure_worker`（建立/沿用 worker），不等待。
+- **`MockBLEManager`**：新增 `ensure_connecting`（記錄 attempt；`fail_connect_for` 者保持斷線，否則標記已連，非拋例外）。`connect()` 維持同步誠實不變。
+- **`BleRuntime`**：
+  - `activate()` 維持同步（`_bring_up_device`：誠實 `connect()` + 訂閱 display），成功者 seed `_DeviceMonitorState(subscribed=True)`（`last_status` 留 `None` 讓 monitor 首 tick 發 CONNECTED），避免與 monitor 重複訂閱。
+  - `_DeviceMonitorState` 新增 `subscribed: bool`。
+  - 訂閱抽成 `_subscribe_display_channels(conn, device)`，由 activate 與 monitor 共用。
+  - 連上轉態抽成 `_on_connected(conn, device, state)`：若 `not subscribed` 則訂閱並設旗標，重置 backoff、發 CONNECTED。
+  - `_monitor_tick`：連上 → `_on_connected`；未連上 → `subscribed=False`、依現有 backoff 狀態機；retry 分支改呼叫 **`ensure_connecting()`（非阻塞）**，再即時 `is_connected()` 複查（同步 mock 同 tick 完成；async bluepy 於稍後 tick 由頂端分支補訂閱）。
+
+## B2.3 行為與測試
+
+- `connect()` 誠實同步：mock 早已如此，故型別/契約由 mock 表面驗證；bluepy 為 Linux-only，僅 mypy 靜態檢查 + 人工審閱，**實機行為須在 RPi 驗證**。
+- regression：`_LinkNeverUpBLE` 改為覆寫 `ensure_connecting`（no-op）而非 `connect`，繼續鎖定反 flap。
+- 新增測試：mock `ensure_connecting` 的成功/失敗；monitor 重連路徑使用非阻塞 `ensure_connecting`（以一個「呼叫 `connect()` 即 assert 失敗」的 mock 子類證明 monitor 重連不走阻塞 connect）。
+- `activate()` 行為與相關 4 個測試保持不變。
+
+## B2.4 範圍取捨
+
+`activate()` 不改非阻塞：它在 startup 主執行緒跑一次，阻塞可接受；改非阻塞需重寫 4 個鎖定其同步契約的測試、且改掉有價值的既有行為，風險不划算。非阻塞的真正價值在常駐的 monitor，已達成。
