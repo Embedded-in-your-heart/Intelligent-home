@@ -52,31 +52,6 @@
 \end{frame}
 
 % ============================================================
-\section{專案動機與目標}
-
-\begin{frame}{動機：異質設備整合的挑戰}
-  \begin{itemize}
-    \item STM32 開發板具備豐富感測器，但\textbf{網路與伺服能力薄弱}
-    \item 若每個節點各自連網，將造成\textbf{部署成本高}且\textbf{耗電}
-    \item 需要一個\textbf{通用的中央伺服器}動態管理多個感測節點
-  \end{itemize}
-
-  \vfill
-  \begin{block}{設計目標}
-    建立一套\textbf{高度模組化}、具備\textbf{本地端安全性}、
-    以 BLE 為通訊核心的智慧家庭生態系統。
-  \end{block}
-\end{frame}
-
-\begin{frame}{核心架構：中央伺服器 + BLE}
-  \begin{itemize}
-    \item \textbf{使用者} 透過 Web UI 遠端控制
-    \item \textbf{周邊設備} 不需各自連網，統一透過 BLE 與 RPi 通訊
-    \item 達到顯著\textbf{省電}與\textbf{部署簡化}效果
-  \end{itemize}
-\end{frame}
-
-% ============================================================
 \section{系統架構}
 
 \begin{frame}{硬體部署：一對多分散式節點}
@@ -129,9 +104,6 @@
       \bottomrule
     \end{tabular}
   \end{table}
-
-  \vspace{0.3em}
-  \scriptsize 註：未來預留 Hybrid 複合型頻道擴充空間。
 \end{frame}
 
 % ============================================================
@@ -271,37 +243,6 @@
     \item \texttt{next} 參數的 \textbf{open-redirect 防護}
     \item Jinja2 陽春模板（base / index / auth）含 CSRF token
   \end{itemize}
-
-  \vspace{0.4em}
-  \begin{alertblock}{里程碑}
-    可從瀏覽器完成「\textbf{註冊 → 自動登入 → 登出}」完整流程
-  \end{alertblock}
-\end{frame}
-
-\begin{frame}{測試與品質}
-  \begin{columns}[T]
-    \column{0.55\textwidth}
-    \textbf{測試覆蓋}
-    \begin{itemize}
-      \item \textbf{103} unit tests passing
-      \item in-memory SQLite fixture
-      \item fake clock 注入測限頻
-      \item mock \texttt{BLEManager} 測 service
-    \end{itemize}
-
-    \column{0.45\textwidth}
-    \textbf{靜態檢查}
-    \begin{itemize}
-      \item \texttt{ruff check} \, 全綠
-      \item \texttt{mypy src} (strict) \, 全綠
-      \item per-module type overrides
-    \end{itemize}
-  \end{columns}
-
-  \vspace{0.6em}
-  \begin{block}{CI 入口}
-    \texttt{task ci} \, = \, lint + typecheck + test
-  \end{block}
 \end{frame}
 
 % ============================================================
@@ -364,12 +305,6 @@
     \item BLE \textbf{Notify 推播延遲}量測
     \item 異常情境：斷線重連、信號弱、節點重啟
   \end{itemize}
-
-  \vspace{0.5em}
-  \begin{block}{驗收標準}
-    至少 3 個 STM32 節點同時連線 30 分鐘以上，
-    Notify 訊息掉包率 \textless{} 1\%。
-  \end{block}
 \end{frame}
 
 \begin{frame}{\pl{規劃中} Phase 4：部署與穩定性}
@@ -381,26 +316,8 @@
   \end{itemize}
 \end{frame}
 
-% ============================================================
-\section{結語}
-
-\begin{frame}{里程碑摘要}
-  \begin{itemize}
-    \item[\textcolor{done}{$\checkmark$}] \dn{Phase 1–2}：骨架 + BLE 通訊鏈結
-    \item[\textcolor{done}{$\checkmark$}] \dn{Phase 3a–c}：DB / Service / 認證 \, ── \, 103 tests 全綠
-    \item[\textcolor{accent}{$\circ$}]    \ip{Phase 3d}：Device / Channel CRUD
-    \item[\textcolor{planned}{$\cdot$}]   \pl{Phase 3e}：SocketIO + 前端趨勢圖
-    \item[\textcolor{planned}{$\cdot$}]   \pl{STM32 韌體}：B-L475E-IOT01A BLE peripheral
-    \item[\textcolor{planned}{$\cdot$}]   \pl{Phase 4}：整合測試與部署
-  \end{itemize}
-
-  \vfill
-  \centering
-  \Large 下一步：\, 完成 Phase 3d，並開始 STM32 端 BLE Service 設計。
-\end{frame}
-
 \begin{frame}[standout]
-  Q \& A
+  謝謝聆聽！\\
 \end{frame}
 
 \end{document}
