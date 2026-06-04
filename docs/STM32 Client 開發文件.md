@@ -293,15 +293,15 @@ Intelligent-home-STM32-client/
 │       └── …
 ├── BlueNRG_MS/
 │   ├── App/
-│   │   ├── app_bluenrg_ms.c            # BLE init、廣告、event loop（改造）
-│   │   ├── gatt_db.c                   # 新 Service/Char 表（重寫）
-│   │   ├── gatt_db.h                   # UUID 常數、handle 宣告
-│   │   ├── sensor.c                    # 舊 SensorDemo 邏輯 → 改名/分拆為：
-│   │   ├── sensor_task.c               #   感測器採集（新）
-│   │   ├── audio_task.c                #   麥克風（新）
-│   │   ├── actuator.c                  #   LED 寫入（新）
+│   │   ├── app_bluenrg_ms.c            # BLE init、main-loop callback（改造）
+│   │   ├── sensor.c                    # BLE GAP / 廣告（HOME-XXXX）/ HCI event router
+│   │   ├── gatt_db.c                   # GATT Service/Char 表 + Write callback（LED1 GPIO）
+│   │   ├── notify_queue.c              # sensor/audio task → BleTask 推播佇列（新）
+│   │   ├── sensor_task.c               #   HTS221 + LSM6DSL 採集（新）
+│   │   ├── audio_task.c                #   MP34DT01 麥克風 DFSDM+DMA（新）
 │   │   └── (對應 .h)
 │   └── Target/                         # hci_tl_interface 等（不動）
+├── X-CUBE-MEMS1/Target/                # MEMS 設定（hook 到 BSP_I2C2，不動）
 ├── Drivers/                            # HAL + BSP（不動）
 └── Middlewares/                        # FreeRTOS、BlueNRG-MS 中介層（不動）
 ```
@@ -394,8 +394,8 @@ Intelligent-home-STM32-client/
 | **M2a** | X-CUBE-MEMS1 + X-CUBE-ALGOBUILD generate（含 HTS221/LSM6DSL component driver + CMSIS-DSP） | ✅（2026-05-31） |
 | **M2a** | `sensor_task.c` + SensorTask 4 Hz 採集（走 BSP_I2C2 + component driver），USART1 印解碼值 | ✅（2026-05-31 驗證：室溫合理、握住升溫、搖晃 accel 跳、靜止 gyro 近零） |
 | **M2b** | `notify_queue.{c,h}` + SensorTask 推 NotifyQueue + BleTask `NotifyQueue_Pump()` + MotionAlert 100 ms hold / 1 s lockout | ✅（2026-05-31 驗證：nRF Connect 訂閱所有 5 條感測 char 看到資料流） |
-| **M3a** | `audio_task.c` 用 **polling 模式**（`HAL_DFSDM_FilterPollForRegConversion`）每 200 ms 取 80 樣本 burst 算 RMS，印 mic 能量 | ✅（2026-05-31 驗證：安靜 rms≈0、大聲說話 rms 100–130；mic 硬體確認健康，§15.2.6）|
-| **M3a-DMA** | 原規劃 DMA + ISR 累加路徑 | ⚠️ 受阻於 CSELR 映射 bug，詳見 §15.1；polling 方案頂用，DMA 降級成 Phase 4 效能優化 |
+| **M3a** | `audio_task.c` 麥克風採集算 RMS，印 mic 能量 | ✅（2026-05-31 先以 polling 驗證 mic 硬體健康：安靜 rms≈0、大聲說話 rms 100–130；§15.2.6）|
+| **M3a-DMA** | 改 DMA circular + HT/TC 中斷驅動（callback `osThreadFlagsSet` 喚醒 AudioTask） | ✅（分支 `feat/dma-interrupt`；原「DMA 不搬」確認為開發板硬體故障，換板解決，§15.1）|
 | **M3b** | 推 NotifyQueue → `MicLevel` (`rms × 8`, clamp 0..1023) + LoudAlert 200 ms hold / 1 s lockout（門檻 400）| ✅（2026-05-31 驗證：nRF Connect 訂閱 MicLevel 跟拍手 / 說話變動、LoudAlert 觸發/清除正常）|
 | **M4** | `Attribute_Modified_CB` 內驅動 PA5 GPIO；ControlFlag 持久化 | ✅（2026-05-31 驗證：nRF Connect 寫 0x01 LED 亮、0x00 熄滅、ControlFlag echo） |
 | Phase 3 | 與 RPi 端整合測試 | ⬜ |
@@ -435,7 +435,7 @@ Intelligent-home-STM32-client/
 | 低功耗模式 | v1 沒做，FreeRTOS idle 不進 sleep | 主文件 §2.2 提到省電是核心目標；Phase 4 再優化 |
 | 燒錄後 `data_format` 與 RPi 不一致 | RPi 解錯誤 | 本文件 §12 為唯一真實來源；變更須同步通知 RPi |
 | Magnitude 計算用 `sqrt()` | M4F 有 FPU 不致命，但麥克風 RMS 量大時要小心 | RMS 用 int 累加 → 最後一次 sqrt |
-| **DFSDM1_FLT0 DMA request 映射** | CubeMX 在 MSP 內把 `Init.Request = DMA_REQUEST_0`（=ADC2 on STM32L475），但 DFSDM1_FLT0 應為 C4S=7。Filter 產 data 但 DMA 永遠等不到 request | M3a **暫緩**；修法嘗試見 §15。對主功能（溫濕度 / 加速度 / LED 控制 / Phase 3 RPi 整合）無影響 |
+| ~~DFSDM1_FLT0 DMA 不搬資料~~ ✅ 已解決 | 曾以為是 CubeMX DMA request 映射 bug，實為**開發板硬體故障**（DMA1 控制器忽略周邊 request）。設定/HAL 一直正確：`CSELR.C4S=0` 即 DFSDM1_FLT0（RM0351 Rev 9 **Table 44**，非 Table 41）| 換板後 DMA 正常；麥克風改 DMA + interrupt 驅動（分支 `feat/dma-interrupt`）。完整紀錄見 §15 |
 
 ---
 
@@ -463,7 +463,8 @@ Milestone 1 已完成（2026-05-30）。後續按 §10.1 「先 serial 再 BLE�
 
 ### Milestone 3 — 麥克風
 
-> ✅ **狀態：以 polling 路徑完成（2026-05-31）**。原規劃的 DMA 走法卡在 CSELR 映射 bug（§15.1），改用 `HAL_DFSDM_FilterPollForRegConversion` 每 200 ms 取 80 樣本 burst 算 RMS 後推 BLE，量到的數值跟拍手 / 說話符合預期。DMA 路徑降級成 Phase 4 效能優化（CPU 從 ~5% 降到接近 0%、取樣覆蓋率從 5% 拉到 100%），不再是 blocker。下方原規劃保留供 Phase 4 啟動 DMA 時參考。
+> ✅ **狀態：DMA + interrupt 路徑完成（分支 `feat/dma-interrupt`）**。
+> 歷程：先以 polling 完成（2026-05-31），因當時 DMA 不搬資料；後查明（issue #1）是**開發板硬體故障**，非韌體 — DMA 設定與 HAL 一直正確（`CSELR.C4S=0` 即 DFSDM1_FLT0，RM0351 Table 44）。換板後 DMA 正常，遂把 audio_task 改回 DMA circular + HT/TC 中斷驅動：callback 只 `osThreadFlagsSet` 喚醒 AudioTask，task 對每個 200 ms 半 buffer 算 RMS → MicLevel / LoudAlert。CPU 從 ~5% 降到接近 0%、取樣覆蓋率 5% → 100%。校正沿用 polling（`raw>>16 == sample24>>8`，故 `MIC_SCALE_NUM=8` / `LOUD_THRESHOLD=400` 不變）。完整紀錄見 §15。
 
 **3a：Serial 驗證**
 - 新增 `BlueNRG_MS/App/audio_task.{c,h}`：FreeRTOS task（osPriorityNormal, 1 KB stack）
@@ -500,9 +501,21 @@ Milestone 1 已完成（2026-05-30）。後續按 §10.1 「先 serial 再 BLE�
 
 ## 15. Blocker 紀錄
 
-### 15.1 M3a — DFSDM1_FLT0 在 DMA1_Channel4 上的 request 映射錯誤（2026-05-31）
+### 15.1 M3a — DFSDM1 DMA 不搬資料（✅ 已解決：開發板硬體故障）
 
-**症狀**
+> **結論（2026-06-04，GitHub issue #1 結案）**：根因是**開發板 DMA1 控制器硬體故障** —
+> 它能執行軟體觸發（MEM2MEM）搬移，卻忽略所有周邊觸發的 DMA request（DFSDM ch4 與 ADC ch1
+> 兩通道都不搬、且無任何錯誤旗標）。**韌體 / 設定 / HAL 一直是對的**：
+> - `CSELR.C4S=0` 即 DFSDM1_FLT0（RM0351 Rev 9 **Table 44**，非當初誤查的 Table 41）。
+> - 當初「CubeMX 把 request 設成 ADC2、應強制 C4S=7」的假設**是錯的**；在 ch4 上 `0111` 並非 DFSDM，
+>   強制 C4S=7 反而把 mux 指離 DFSDM1_FLT0。
+> - polling 能讀到 mic → mic / DFSDM / 時脈 / PDM 解調全部正常。
+>
+> **換一片新板子後 DMA 立即正常**，audio_task 已改回 DMA + interrupt 驅動（分支 `feat/dma-interrupt`）。
+>
+> 以下保留原始除錯歷程（含已被推翻的「request 映射」假設）作為過程紀錄。
+
+**症狀（原始觀察）**
 - `HAL_DFSDM_FilterRegularStart_DMA(&hdfsdm1_filter0, ...)` 回傳 `HAL_OK`
 - 但 ISR (`HAL_DFSDM_FilterRegConvHalfCpltCallback` / `...CpltCallback`) 完全沒被呼叫
 - AudioTask 持續印 `[mic] no samples (DMA stalled?)`
@@ -689,12 +702,12 @@ DFSDM raise "FLT0 conversion complete" → DMA request 訊號
 | DMA1 clock | `MX_DMA_Init` 內 `__HAL_RCC_DMA1_CLK_ENABLE` | — | ✅ |
 | NVIC DMA1_Ch4 | `MX_DMA_Init` priority 6 | — | ✅ |
 
-#### 15.2.7 可疑 / 未實機確認部位
+#### 15.2.7 可疑 / 未實機確認部位（註：此表為當時假設，最終根因為硬體故障，見 §15.1）
 
 | 部位 | 觀察 | 可疑原因 |
 | --- | --- | --- |
-| **`CSELR.C4S = 0`**（應為 7）| §15.1 鐵證 | CubeMX template hardcode `DMA_REQUEST_0` |
-| `FLTISR.ROVRF=1` (bit 3) | regular overrun | Filter 產 data 但 DMA 沒讀（CSELR 錯的直接後果）|
+| ~~`CSELR.C4S = 0`（應為 7）~~ | §15.1 | ❌ 假設錯誤 — `C4S=0` 才正確（=DFSDM1_FLT0, Table 44）|
+| `FLTISR.ROVRF=1` (bit 3) | regular overrun | Filter 產 data 但 DMA 沒讀（板子 DMA1 不回應周邊 request 的後果）|
 | `FLTISR` 高 byte = 0xFF（bits [23:16] = CKABF[7:0]）| 多 channel clock-absence flag | sticky bit / 啟動 transient / 真有 clock 異常 — 任一可能，**未實機驗** |
 | **PE9 CKOUT 實際波形** | 未量 | 軟體邏輯正確，但**無 scope 量過**；可能 CKOUT 根本沒輸出 |
 | **PE7 DOUT 實際波形** | 未量 | 若 CKOUT 不出，mic 不吐 data；需 scope 看 PE7 是否有 1/0 切換 |
