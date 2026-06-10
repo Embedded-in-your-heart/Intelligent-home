@@ -19,13 +19,13 @@
 
 ## 2. BLE 契約（已釘死，agents 依此實作）
 
-Home Sensor Service 新增三條 characteristic（base UUID 同既有 `xxxxxxxx-8E22-4541-9D4C-21EDAE82ED19`）：
+Home Sensor Service：
 
-| Name | 短碼 | 格式 | 屬性 | 推播時機 | 語意 |
-| --- | --- | --- | --- | --- | --- |
-| SoundClass | `1A220009` | `uint8` | Read+Notify | 變化時 | 0=安靜 1=語音 2=拍手 3=警報 4=其他 |
-| AlarmDetected | `1A22000A` | `uint8` | Read+Notify | 事件觸發 | 連續 ≥3 個 200 ms 視窗判定警報音 → 1；連續 ≥5 個非警報視窗 → 0；轉換間鎖 2 s |
-| MicDBA | `1A22000B` | `float32_le` | Read+Notify | 每 200 ms | dB(A) 估計值：`20·log10(max(rms_w,1)) + OFFSET`（OFFSET 預設 30，**待實機校正**） |
+| Name | 短碼 | 格式 | 屬性 | 推播時機 | 狀態 | 語意 |
+| --- | --- | --- | --- | --- | --- | --- |
+| AlarmDetected | `1A22000A` | `uint8` | Read+Notify | 事件觸發 | ✅ 保留 | 連續 ≥3 個 200 ms 視窗判定警報音 → 1；連續 ≥5 個非警報視窗 → 0；轉換間鎖 2 s |
+| MicDBA | `1A22000B` | `float32_le` | Read+Notify | 每 200 ms | ✅ 保留 | dB(A) 估計值：`20·log10(max(rms_w,1)) + OFFSET`（OFFSET 預設 30，**待實機校正**） |
+| SoundClass | `1A220009` | `uint8` | Read+Notify | 變化時 | ⛔ 已移除（2026-06-11，分類器簡化為警報音偵測） | ~~0=安靜 1=語音 2=拍手 3=警報 4=其他~~ |
 
 既有 MicLevel / LoudAlert 契約**完全不變**（校正常數沿用）。
 

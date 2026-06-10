@@ -558,25 +558,26 @@ sudo systemctl status home-server
 
 | 特徵名稱 | Short ID | 格式 | 屬性 | 語意 |
 | --- | --- | --- | --- | --- |
-| SoundClass | 1A220009 | uint8 (len 1) | Read + Notify | 聲音分類：0=安靜, 1=語音, 2=拍手, 3=警報, 4=其他；狀態變化時通知（非週期） |
-| AlarmDetected | 1A22000A | uint8 (len 1) | Read + Notify | 警報聲偵測：≥3 個連續 200ms 時窗分類為警報音時設為 1；≥5 個連續非警報時窗時回到 0；狀態轉變間隔 2s 鎖出期（同 LoudAlert 模式） |
+| AlarmDetected | 1A22000A | uint8 (len 1) | Read + Notify | 警報聲偵測：≥3 個連續 200ms 時窗偵測到警報音時設為 1；≥5 個連續非警報時窗時回到 0；狀態轉變間隔 2s 鎖出期（同 LoudAlert 模式） |
 | MicDBA | 1A22000B | float32_le (len 4) | Read + Notify | A 加權音量位準估算值（dB），每 200ms 時窗推送一次；公式 `dba = 20*log10f(max(rms_weighted, 1.0f)) + AUDIO_DBA_CAL_OFFSET`，OFFSET 預設 30.0f，標記待校準 |
 | VibrationRMS | 1A22000C | float32_le (len 4) | Read + Notify | RMS (mg) of high-passed linear acceleration over a 1 s window；每 1 s 推送一次 |
 | VibrationAlert | 1A22000D | uint8 (len 1) | Read + Notify | 家電運轉：≥5 個連續 1 s 時窗 VibrationRMS 高於 VIB_ON 閾值時設為 1；≥10 個連續時窗低於 VIB_OFF 閾值時回到 0 |
 | QuakeAlert | 1A22000E | uint8 (len 1) | Read + Notify | 地震警報：≥3 個連續時窗 1–10 Hz 頻帶 RMS 高於 QUAKE 閾值時設為 1；≥5 個連續時窗低於時回到 0；狀態轉變間隔 2s 鎖出期（同 LoudAlert 模式）；初始化後 5 s 暖機期間警報被抑制 |
 
-### 12.2 RPi 端單位慣例
+### 12.2 RPi 端單位慣例（enum 列舉）
 
-聲音分類（SoundClass）頻道的 `unit` 欄位設定為狀態列舉格式：
+`unit` 欄位若以 `enum:` 開頭，格式為狀態列舉字串，例如：
 
 ```
-unit = "enum:0=安靜,1=語音,2=拍手,3=警報,4=其他"
+unit = "enum:0=關閉,1=運轉,2=故障"
 ```
 
 Dashboard 對此格式的頻道：
 - 將數值對應至列舉標籤並顯示為狀態徽章（badge）
 - 無論 BLE 推送頻率如何，透過 WebSocket 與 SocketIO 即時更新 UI
 - 初始值從 `GET /channels/<id>/latest` 取得
+
+**目前無內建 preset 使用列舉格式，屬通用機制備用**（2026-06-11，SoundClass 於該日移除，不再有聲音分類 preset）。
 
 ---
 
