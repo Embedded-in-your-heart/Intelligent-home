@@ -166,6 +166,9 @@
 | MotionAlert | `1A220006` | Read + Notify | `uint8` | `0`=normal / `1`=abnormal | 事件觸發即推 |
 | MicLevel | `1A220007` | Read + Notify | `uint16_le` | 0..1023 正規化能量 | 每 200 ms |
 | LoudAlert | `1A220008` | Read + Notify | `uint8` | `0`=quiet / `1`=loud | 事件觸發即推 |
+| SoundClass | `1A220009` | Read + Notify | `uint8` | `0`=quiet / `1`=speech / `2`=clap / `3`=alarm / `4`=other | 變化時 |
+| AlarmDetected | `1A22000A` | Read + Notify | `uint8` | `1`=alarm tone detected / `0`=normal | 事件觸發即推 |
+| MicDBA | `1A22000B` | Read + Notify | `float32_le` | dB(A) | 每 200 ms |
 
 #### Home Control Service — `1A22F001-…`
 
@@ -182,6 +185,7 @@
 | --- | --- | --- |
 | MotionAlert=1 | `AccelMagnitude > 1.8 g` 或 `GyroMagnitude > 250 dps` | 連續 ≥ 100 ms 才觸發；事件結束後鎖 1 s 不重複觸發 |
 | LoudAlert=1 | `MicLevel > 400`（正規化，2026-05-31 實機校正）| 連續 ≥ 200 ms 才觸發；事件結束後鎖 1 s |
+| AlarmDetected=1 | SoundClass 連續 ≥ 3 個 200 ms 視窗判定為 alarm (SoundClass=3) | 連續 ≥ 5 個非警報視窗 → 回到 0；狀態轉換間鎖 2 s |
 
 > 門檻為 v1 預估值；正式調校在 Phase 1 驗證時進行。門檻定義在韌體常數，不開放動態調整（簡化 GATT 表；之後可加 `MotionThreshold` characteristic）。
 
@@ -260,7 +264,7 @@ on_attribute_modified(handle, length, data):
 - 正規化：`MicLevel = clamp(round(rms / scale), 0, 1023)`（`scale` 在校正時決定）
 - LoudAlert：見 §5.5
 
-> v1 不送原始 PCM 也不做 FFT。
+> v2 支援音頻 DSP：每 200 ms 視窗對前 1024 樣本做 Hanning window + RFFT(1024, CMSIS-DSP)、依頻帶能量規則分類（quiet/speech/clap/alarm/other）至 SoundClass，並應用 A-weighting 3 級 biquad filter 計算 dB(A) 至 MicDBA。常數（分類門檻、A-weighting 係數）待實機校正。
 
 ### 7.4 LED（致動器）
 
@@ -299,6 +303,7 @@ Intelligent-home-STM32-client/
 │   │   ├── notify_queue.c              # sensor/audio task → BleTask 推播佇列（新）
 │   │   ├── sensor_task.c               #   HTS221 + LSM6DSL 採集（新）
 │   │   ├── audio_task.c                #   MP34DT01 麥克風 DFSDM+DMA（新）
+│   │   ├── audio_dsp.c                 #   CMSIS-DSP 音頻分類、A-weighting（新）
 │   │   └── (對應 .h)
 │   └── Target/                         # hci_tl_interface 等（不動）
 ├── X-CUBE-MEMS1/Target/                # MEMS 設定（hook 到 BSP_I2C2，不動）
@@ -398,6 +403,7 @@ Intelligent-home-STM32-client/
 | **M3a-DMA** | 改 DMA circular + HT/TC 中斷驅動（callback `osThreadFlagsSet` 喚醒 AudioTask） | ✅（分支 `feat/dma-interrupt`；原「DMA 不搬」確認為開發板硬體故障，換板解決，§15.1）|
 | **M3b** | 推 NotifyQueue → `MicLevel` (`rms × 8`, clamp 0..1023) + LoudAlert 200 ms hold / 1 s lockout（門檻 400）| ✅（2026-05-31 驗證：nRF Connect 訂閱 MicLevel 跟拍手 / 說話變動、LoudAlert 觸發/清除正常）|
 | **M4** | `Attribute_Modified_CB` 內驅動 PA5 GPIO；ControlFlag 持久化 | ✅（2026-05-31 驗證：nRF Connect 寫 0x01 LED 亮、0x00 熄滅、ControlFlag echo） |
+| **M5** | CMSIS-DSP 整合 + SoundClass/AlarmDetected/MicDBA 三條 char | ✅（2026-06-11，待實機校正門檻） |
 | Phase 3 | 與 RPi 端整合測試 | ⬜ |
 | Phase 4 | 多節點、連線穩定性、（選用）low power | ⬜ |
 
@@ -416,6 +422,9 @@ Intelligent-home-STM32-client/
 | MotionAlert | display | uint8 | — | `MotionAlert` |
 | MicLevel | display | uint16_le | — | `MicLevel` |
 | LoudAlert | display | uint8 | — | `LoudAlert` |
+| SoundClass | display | uint8 | `enum:0=安靜,1=語音,2=拍手,3=警報,4=其他` | `SoundClass` |
+| AlarmDetected | display | uint8 | — | `AlarmDetected` |
+| MicDBA | display | float32_le | dB(A) | `MicDBA` |
 | Led1State | controller | uint8 | — | `LED1` |
 | ControlFlag | controller | uint8 | — | `ControlFlag` |
 

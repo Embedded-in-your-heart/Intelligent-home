@@ -176,9 +176,11 @@ class RateLimiter:
 #### 4.1.5 資料解析
 
 每個頻道在 `channels` 表中記錄 `data_format`，例如：
-- `"uint8"`：開關狀態（0 / 1）
+- `"uint8"`：開關狀態（0 / 1）；或狀態列舉（搭配 `unit` 欄位）
 - `"float32_le"`：小端 32-bit float（溫度）
 - `"uint16_le"`：小端 unsigned 16-bit（濕度 ×100）
+
+**狀態列舉單位慣例**：當 `unit` 以 `"enum:"` 開頭時，格式為 `"enum:0=標籤,1=標籤,2=標籤,..."` 的逗號分隔型別值與標籤對映。例 `"enum:0=安靜,1=語音,2=拍手,3=警報,4=其他"` 用於聲音分類頻道。Dashboard 解析此格式時，以狀態徽章顯示對應標籤並即時更新，初始值來自 `GET /channels/<id>/latest`。
 
 解析器：`ble/parser.py`，輸入 `bytes` 與 `data_format`，輸出 `float | int | bool`。
 
@@ -468,6 +470,14 @@ def client(app): ...               # Flask test client
 def logged_in_client(client): ...  # 已登入的 client
 ```
 
+#### MockBLEManager 合成資料流模式
+
+測試時，`MockBLEManager` 可產生下列合成資料流支援前端集成測試：
+
+- **聲音分類（SoundClass 1A220009）**：週期性輸出非零狀態（0~4 列舉值），模擬使用者周遭聲音變化
+- **警報聲偵測（AlarmDetected 1A22000A）**：0/1 切換，帶 2s 鎖出期邏輯，模擬警報觸發與恢復
+- **音量 dB(A)（MicDBA 1A22000B）**：基線 40dB 加減 8dB 範圍的正弦波波形，搭配週期性尖峰（模擬突發噪音），每 200ms 推送一次
+
 ### 8.3 覆蓋率目標
 
 - 非 BLE 層（parser、limiter、db、services、web）：≥ 80%
@@ -537,6 +547,35 @@ sudo systemctl status home-server
 | Phase 3 | 完整 web 層（auth、devices、channels、history）、SocketIO event、Chart.js 整合 | 從瀏覽器完成「新增裝置 → 新增頻道 → 即時看到數據 → 歷史趨勢圖」全流程 |
 | Phase 4 | 多節點佈署測試、systemd 部署、效能與穩定性調整 | RPi 同時連 ≥2 個 STM32 連續運作 ≥1 小時不掉線 |
 
+---
+
+## 12. BLE Contract 與 Channel Presets（STM32 Home Sensor Service）
+
+### 12.1 Service UUID 與特徵 (Characteristics)
+
+**Base UUID**: `xxxxxxxx-8E22-4541-9D4C-21EDAE82ED19`
+
+| 特徵名稱 | Short ID | 格式 | 屬性 | 語意 |
+| --- | --- | --- | --- | --- |
+| SoundClass | 1A220009 | uint8 (len 1) | Read + Notify | 聲音分類：0=安靜, 1=語音, 2=拍手, 3=警報, 4=其他；狀態變化時通知（非週期） |
+| AlarmDetected | 1A22000A | uint8 (len 1) | Read + Notify | 警報聲偵測：≥3 個連續 200ms 時窗分類為警報音時設為 1；≥5 個連續非警報時窗時回到 0；狀態轉變間隔 2s 鎖出期（同 LoudAlert 模式） |
+| MicDBA | 1A22000B | float32_le (len 4) | Read + Notify | A 加權音量位準估算值（dB），每 200ms 時窗推送一次；公式 `dba = 20*log10f(max(rms_weighted, 1.0f)) + AUDIO_DBA_CAL_OFFSET`，OFFSET 預設 30.0f，標記待校準 |
+
+### 12.2 RPi 端單位慣例
+
+聲音分類（SoundClass）頻道的 `unit` 欄位設定為狀態列舉格式：
+
+```
+unit = "enum:0=安靜,1=語音,2=拍手,3=警報,4=其他"
+```
+
+Dashboard 對此格式的頻道：
+- 將數值對應至列舉標籤並顯示為狀態徽章（badge）
+- 無論 BLE 推送頻率如何，透過 WebSocket 與 SocketIO 即時更新 UI
+- 初始值從 `GET /channels/<id>/latest` 取得
+
+---
+
 ### 11.1 目前實作進度（截至 2026-05-31）
 
 Phase 3 依子階段拆分實作，目前進度：
@@ -565,7 +604,7 @@ Phase 3 依子階段拆分實作，目前進度：
 
 ---
 
-## 12. 已知風險與待決議事項
+## 13. 已知風險與待決議事項
 
 | 項目 | 風險 / 待決 | 暫定處理 |
 | --- | --- | --- |
@@ -578,7 +617,7 @@ Phase 3 依子階段拆分實作，目前進度：
 
 ---
 
-## 13. 下一步行動
+## 14. 下一步行動
 
 Phase 1–3d 已完成（見 §11.1）。後續：
 
