@@ -2,7 +2,9 @@
 
 > 對應主文件：[智能家庭控制系統開發文件](./智能家庭控制系統開發文件%20(System%20Development%20Document).md)
 > 前置：[音訊 DSP 擴充計劃](./音訊%20DSP%20擴充計劃%20(Audio%20DSP%20Expansion%20Plan).md)（已完成，CMSIS-DSP 基礎設施可直接重用）
-> 狀態：**草案，待核准後實作**（2026-06-11）
+> 狀態：**已實作，待實機校正**（2026-06-11 核准並完成；STM32 `feat/imu-dsp` 已併入 main。
+> 實機必驗：CTRL1_XL ODR 讀回、FIFO_CTRL3/5 設定讀回、首次 FIFO dump 的 X/Y/Z 槽序、
+> 門檻常數 VIB_ON 30 mg / VIB_OFF 15 mg / QUAKE 20 mg 校正；開機時注意 `[imu] FIFO empty` 退回訊息）
 
 ---
 

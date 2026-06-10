@@ -169,6 +169,9 @@
 | SoundClass | `1A220009` | Read + Notify | `uint8` | `0`=quiet / `1`=speech / `2`=clap / `3`=alarm / `4`=other | 變化時 |
 | AlarmDetected | `1A22000A` | Read + Notify | `uint8` | `1`=alarm tone detected / `0`=normal | 事件觸發即推 |
 | MicDBA | `1A22000B` | Read + Notify | `float32_le` | dB(A) | 每 200 ms |
+| VibrationRMS | `1A22000C` | Read + Notify | `float32_le` | mg（高通濾波加速度 RMS，1 s 視窗）| 每 1 s |
+| VibrationAlert | `1A22000D` | Read + Notify | `uint8` | `1`=vibration detected / `0`=normal | 事件觸發即推 |
+| QuakeAlert | `1A22000E` | Read + Notify | `uint8` | `1`=earthquake-like motion detected / `0`=normal | 事件觸發即推 |
 
 #### Home Control Service — `1A22F001-…`
 
@@ -186,6 +189,8 @@
 | MotionAlert=1 | `AccelMagnitude > 1.8 g` 或 `GyroMagnitude > 250 dps` | 連續 ≥ 100 ms 才觸發；事件結束後鎖 1 s 不重複觸發 |
 | LoudAlert=1 | `MicLevel > 400`（正規化，2026-05-31 實機校正）| 連續 ≥ 200 ms 才觸發；事件結束後鎖 1 s |
 | AlarmDetected=1 | SoundClass 連續 ≥ 3 個 200 ms 視窗判定為 alarm (SoundClass=3) | 連續 ≥ 5 個非警報視窗 → 回到 0；狀態轉換間鎖 2 s |
+| VibrationAlert=1 | VibrationRMS ≥ `VIB_ON` 門檻的連續 ≥ 5 個 1 s 視窗 → 觸發；≥ 10 個視窗低於 `VIB_OFF` 門檻 → 清除 | 鎖機制內建於狀態機 |
+| QuakeAlert=1 | 1–10 Hz 帶通能量（RMS）≥ `QUAKE` 門檻的連續 ≥ 3 個 1 s 視窗 → 觸發；≥ 5 個視窗低於門檻 → 清除；狀態轉換間鎖 2 s | 開機後前 5 s 的 warm-up 期間抑制所有振動/地震告警 |
 
 > 門檻為 v1 預估值；正式調校在 Phase 1 驗證時進行。門檻定義在韌體常數，不開放動態調整（簡化 GATT 表；之後可加 `MotionThreshold` characteristic）。
 
@@ -252,10 +257,13 @@ on_attribute_modified(handle, length, data):
 ### 7.2 LSM6DSL（加速度 + 陀螺儀）
 
 - 透過 BSP（`BSP_ACCELERO_*` / `BSP_GYRO_*`）讀取 raw 3-axis
-- 採樣率：4 Hz
+- **加速度採樣率**：104 Hz（FIFO 每 250 ms 批次讀取；高通濾波（0.4 Hz）去重力後用於 VibrationRMS 計算）；**陀螺儀採樣率**：4 Hz（MotionAlert 用，保持原狀）
+- **FIFO 使用**：每 250 ms 從 FIFO 讀出一批加速度樣本（≈26 個），並應用 1–10 Hz 帶通濾波用於地震檢測
 - `AccelMagnitude = sqrt(ax² + ay² + az²) / 1000.0` (mg → g)
 - `GyroMagnitude = sqrt(gx² + gy² + gz²) / 1000.0` (mdps → dps)
-- MotionAlert：見 §5.5
+- **VibrationRMS** = 高通濾波（0.4 Hz）加速度大小的 RMS，每 1 s 視窗計算
+- **QuakeAlert** = 1–10 Hz 帶通濾波能量判斷（見 §5.5）
+- MotionAlert / AccelMagnitude / GyroMagnitude：見 §5.5，行為無變
 
 ### 7.3 MP34DT01（麥克風）
 
@@ -304,6 +312,8 @@ Intelligent-home-STM32-client/
 │   │   ├── sensor_task.c               #   HTS221 + LSM6DSL 採集（新）
 │   │   ├── audio_task.c                #   MP34DT01 麥克風 DFSDM+DMA（新）
 │   │   ├── audio_dsp.c                 #   CMSIS-DSP 音頻分類、A-weighting（新）
+│   ├── imu_dsp.c                      #   LSM6DSL 104 Hz FIFO 讀取、高通與帶通濾波、VibrationRMS/QuakeAlert 計算（新）
+│   │   ├── imu_dsp.h
 │   │   └── (對應 .h)
 │   └── Target/                         # hci_tl_interface 等（不動）
 ├── X-CUBE-MEMS1/Target/                # MEMS 設定（hook 到 BSP_I2C2，不動）
@@ -404,6 +414,7 @@ Intelligent-home-STM32-client/
 | **M3b** | 推 NotifyQueue → `MicLevel` (`rms × 8`, clamp 0..1023) + LoudAlert 200 ms hold / 1 s lockout（門檻 400）| ✅（2026-05-31 驗證：nRF Connect 訂閱 MicLevel 跟拍手 / 說話變動、LoudAlert 觸發/清除正常）|
 | **M4** | `Attribute_Modified_CB` 內驅動 PA5 GPIO；ControlFlag 持久化 | ✅（2026-05-31 驗證：nRF Connect 寫 0x01 LED 亮、0x00 熄滅、ControlFlag echo） |
 | **M5** | CMSIS-DSP 整合 + SoundClass/AlarmDetected/MicDBA 三條 char | ✅（2026-06-11，待實機校正門檻） |
+| **M6** | LSM6DSL 104 Hz FIFO + VibrationRMS/VibrationAlert/QuakeAlert | ✅（2026-06-11，待實機校正門檻與 FIFO 驗證） |
 | Phase 3 | 與 RPi 端整合測試 | ⬜ |
 | Phase 4 | 多節點、連線穩定性、（選用）low power | ⬜ |
 
@@ -425,6 +436,9 @@ Intelligent-home-STM32-client/
 | SoundClass | display | uint8 | `enum:0=安靜,1=語音,2=拍手,3=警報,4=其他` | `SoundClass` |
 | AlarmDetected | display | uint8 | — | `AlarmDetected` |
 | MicDBA | display | float32_le | dB(A) | `MicDBA` |
+| VibrationRMS | display | float32_le | mg | `VibrationRMS` |
+| VibrationAlert | display | uint8 | — | `VibrationAlert` |
+| QuakeAlert | display | uint8 | — | `QuakeAlert` |
 | Led1State | controller | uint8 | — | `LED1` |
 | ControlFlag | controller | uint8 | — | `ControlFlag` |
 

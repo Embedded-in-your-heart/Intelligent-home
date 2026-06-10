@@ -477,6 +477,7 @@ def logged_in_client(client): ...  # 已登入的 client
 - **聲音分類（SoundClass 1A220009）**：週期性輸出非零狀態（0~4 列舉值），模擬使用者周遭聲音變化
 - **警報聲偵測（AlarmDetected 1A22000A）**：0/1 切換，帶 2s 鎖出期邏輯，模擬警報觸發與恢復
 - **音量 dB(A)（MicDBA 1A22000B）**：基線 40dB 加減 8dB 範圍的正弦波波形，搭配週期性尖峰（模擬突發噪音），每 200ms 推送一次
+- **振動強度（VibrationRMS 1A22000C）**：基線 5±3 mg、每 40 tick 一段 15-tick 約 80 mg 的高震動 burst，模擬家電運轉或外部振動事件，每 1 s 推送一次
 
 ### 8.3 覆蓋率目標
 
@@ -560,6 +561,9 @@ sudo systemctl status home-server
 | SoundClass | 1A220009 | uint8 (len 1) | Read + Notify | 聲音分類：0=安靜, 1=語音, 2=拍手, 3=警報, 4=其他；狀態變化時通知（非週期） |
 | AlarmDetected | 1A22000A | uint8 (len 1) | Read + Notify | 警報聲偵測：≥3 個連續 200ms 時窗分類為警報音時設為 1；≥5 個連續非警報時窗時回到 0；狀態轉變間隔 2s 鎖出期（同 LoudAlert 模式） |
 | MicDBA | 1A22000B | float32_le (len 4) | Read + Notify | A 加權音量位準估算值（dB），每 200ms 時窗推送一次；公式 `dba = 20*log10f(max(rms_weighted, 1.0f)) + AUDIO_DBA_CAL_OFFSET`，OFFSET 預設 30.0f，標記待校準 |
+| VibrationRMS | 1A22000C | float32_le (len 4) | Read + Notify | RMS (mg) of high-passed linear acceleration over a 1 s window；每 1 s 推送一次 |
+| VibrationAlert | 1A22000D | uint8 (len 1) | Read + Notify | 家電運轉：≥5 個連續 1 s 時窗 VibrationRMS 高於 VIB_ON 閾值時設為 1；≥10 個連續時窗低於 VIB_OFF 閾值時回到 0 |
+| QuakeAlert | 1A22000E | uint8 (len 1) | Read + Notify | 地震警報：≥3 個連續時窗 1–10 Hz 頻帶 RMS 高於 QUAKE 閾值時設為 1；≥5 個連續時窗低於時回到 0；狀態轉變間隔 2s 鎖出期（同 LoudAlert 模式）；初始化後 5 s 暖機期間警報被抑制 |
 
 ### 12.2 RPi 端單位慣例
 
