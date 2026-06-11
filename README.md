@@ -1,21 +1,49 @@
 # 智能家庭控制系統
 
 > 基於 Raspberry Pi 3 與 STM32 之 BLE 通訊應用  
-> **課程**：Embedded Systems Lab｜**團隊**：趙子佾、詹詠翔、詹育晟
-
-完全本地端運作的智慧家庭系統——STM32 感測節點透過 BLE 傳送即時感測與 DSP 分析結果，Raspberry Pi 作為中央伺服器提供 Web 管理介面，所有資料保留在本地，不依賴任何雲端服務。
+> **課程**：Embedded Systems Lab｜**團隊**：趙子佾、詹詠翔、詹育晟  
+> **GitHub**：[Embedded-in-your-heart/Intelligent-home](https://github.com/Embedded-in-your-heart/Intelligent-home)
 
 ---
 
-## 系統架構
+## 目錄
+
+1. [動機](#一動機)
+2. [作法](#二作法)
+3. [成果](#三成果)
+4. [參考資料](#四參考資料)
+
+---
+
+## 一、動機
+
+本學期課程中常用的 **STM32 開發板**擁有豐富的板載感測器（溫濕度、加速度、陀螺儀、麥克風），卻在「網路連線」與「建立伺服器」方面能力有限。
+
+現有 IoT 方案大多依賴雲端中繼（MQTT broker、Firebase 等），帶來三個主要問題：
+- **延遲**：資料必須繞過遠端伺服器才能回到同一區域網路的顯示端
+- **隱私疑慮**：家庭感測資料（溫度、聲音、動作）上傳至第三方雲端
+- **連網依賴**：斷網即失效
+
+本專案的目標是打造一個**完全本地端運作**的智慧家庭系統：
+
+- 以 **Raspberry Pi 3** 作為中央伺服器，提供 Web 管理介面與資料持久化
+- 以 **STM32 B-L475E-IOT01A** 作為感測節點，透過 **BLE（低功耗藍牙）** 傳送感測資料
+- 感測器原始數值經由 **DSP 處理**，輸出有意義的分析結果（dB(A) 音量、警報音偵測、震動分析、地震帶偵測）
+- 支援**一對多**架構：一台 RPi 可同時管理多個 STM32 節點
+
+---
+
+## 二、作法
+
+### 2.1 系統架構
 
 ```
 ┌──────────────────┐                      ┌──────────────────────┐
 │  STM32 節點 A    │◄────── BLE ─────────►│                      │
 │  HOME-XXXX       │                      │  Raspberry Pi 3      │
 └──────────────────┘                      │  Flask + SQLite      │
-                                          │                      │
-┌──────────────────┐                      │  port 5000           │
+                                          │  port 5000           │
+┌──────────────────┐                      │                      │
 │  STM32 節點 B    │◄────── BLE ─────────►│                      │
 │  HOME-YYYY       │                      └──────────┬───────────┘
 └──────────────────┘                                 │ HTTP / WebSocket
@@ -25,197 +53,174 @@
                                           └──────────────────────┘
 ```
 
----
+通訊採 **BLE GATT** 協定，三個階段：
+1. **廣播與探索**：STM32 廣播 `HOME-XXXX`（後綴為 BD_ADDR 末 2 bytes），RPi 掃描後由使用者在 Web UI 選擇新增
+2. **GATT 連線**：RPi 主動連上 STM32，透過 Service / Characteristic 進行雙向讀寫
+3. **Notify 推播**：感測數值更新後 STM32 主動推播給 RPi，RPi 再透過 WebSocket 推播至瀏覽器
 
-## Repository 結構
+### 2.2 STM32 韌體（`Intelligent-home-STM32-client`）
 
-```
-Intelligent-home/                       ← 本 repo（文件 + submodule 管理）
-├── docs/
-│   ├── 智能家庭控制系統開發文件.md      ← 系統總設計
-│   ├── RPi-Server 開發文件.md          ← 伺服器軟體設計
-│   ├── STM32 Client 開發文件.md        ← 韌體架構與 GATT 規格
-│   └── project_summary_hackmd_v2.md   ← 期末報告（最新版）
-├── slides/
-│   └── progress_report.pdf
-├── Intelligent-home-RPi-server/        ← submodule（Python / Flask 伺服器）
-└── Intelligent-home-STM32-client/      ← submodule（STM32 C 韌體）
-```
+**硬體：** STM32 B-L475E-IOT01A（Cortex-M4F, 80 MHz）+ BlueNRG-MS BLE 模組
 
----
+**FreeRTOS 三任務架構：**
 
-## 功能總覽
-
-### 感測器監控（即時折線圖）
-
-| 頻道 | 來源 | 格式 | 更新頻率 |
-|---|---|---|---|
-| 溫度（°C）| HTS221 | float32 | 1 s |
-| 濕度（% RH）| HTS221 | float32 | 1 s |
-| 加速度量值（g）| LSM6DSL 104 Hz FIFO | float32 | 250 ms |
-| 陀螺儀量值（dps）| LSM6DSL | float32 | 250 ms |
-| 麥克風音量（0–1023）| MP34DT01 DFSDM+DMA | uint16 | 200 ms |
-| 音量 dB(A) | Audio DSP（A-weighting IIR）| float32 | 200 ms |
-| 震動強度 RMS（mg）| IMU DSP（HP biquad）| float32 | 1 s |
-
-### 警報偵測（即時 Toast 通知）
-
-| 警報 | 觸發條件 | Demo 方式 |
+| Task | 優先級 | 工作內容 |
 |---|---|---|
-| 異常晃動 | 加速度 > 1.8 g 或陀螺儀 > 250 dps，持續 100 ms | 搖晃板子 |
-| 大聲警示 | 麥克風音量 > 400，持續 200 ms | 拍手 / 大喊 |
-| 警報聲偵測 | FFT peak ratio（2800–3600 Hz）> 30% | 播放煙霧警報聲 |
-| 家電運轉 | 震動 RMS > 30 mg | 放在運轉中的馬達上 |
-| 地震警報 | 1–10 Hz 帶通 RMS > 20 mg | 規律前後搖晃板子 |
+| `BleTask` | High | BLE stack 主迴圈；GATT write callback（LED 控制）；從 NotifyQueue 讀資料後呼叫 `aci_gatt_update_char_value()` |
+| `SensorTask` | Normal | LSM6DSL FIFO 104 Hz 批量讀取；每秒讀 HTS221；計算 MotionAlert；IMU DSP 計算震動 RMS / 地震帶 RMS |
+| `AudioTask` | Normal | DFSDM + DMA 取 PDM；Audio DSP 計算 dB(A) 與 FFT 警報音偵測 |
 
-### 遠端控制
+所有 BLE ACI 呼叫序列化在 BleTask，其他 Task 透過 `NotifyQueue`（`osMessageQueue`）傳資料，確保 SPI3 無競爭。
 
-| 功能 | 操作 | 結果 |
-|---|---|---|
-| LED1 開關 | 瀏覽器 Toggle | 板子 PA5 LED 亮 / 滅 |
-| ControlFlag | 數值輸入送出 | Serial log 印出收到值 |
+**DSP 模組：**
 
-### Web 系統
+*Audio DSP（`audio_dsp.c`）— 每 200 ms 處理 1600 個樣本（8 kHz）*
+```
+raw samples → A-weighting IIR biquad（3-stage DF1，IEC 61672-1）
+            → weighted RMS → dB(A)
 
-- 使用者註冊 / 登入 / 登出（bcrypt 雜湊，CSRF 保護）
-- BLE 掃描並新增裝置
-- 頻道預設清單（14 個預設，下拉選單快速套用）
-- 裝置連線狀態即時徽章
-- 斷線自動重連（指數退避 1 s → 60 s）
-- 時間窗切換（1m / 10m / 1h / 1d / 1w）
-- 支援多裝置同時管理
-
----
-
-## 快速啟動
-
-### 1. Clone（含 submodule）
-
-```bash
-git clone --recurse-submodules https://github.com/Embedded-in-your-heart/Intelligent-home.git
-cd Intelligent-home
+            → Hanning window → arm_rfft_fast_f32（1024-point FFT）
+            → 偵測 2800–3600 Hz 峰值比例 → 警報音偵測
 ```
 
-### 2. STM32 韌體燒錄
-
-硬體需求：**STM32 B-L475E-IOT01A** + USB 連電腦
-
+*IMU DSP（`imu_dsp.c`）— 每樣本輸入，每 104 樣本（1 s）輸出*
 ```
-1. 用 STM32CubeIDE 開啟 Intelligent-home-STM32-client/
-   File → Open Projects from File System → 選資料夾
-
-2. 編譯：Project → Build All（Ctrl+B）
-
-3. 燒錄：Run → Run（F11）
-
-4. 開 Serial Monitor（115200 8N1），確認看到：
-   Advertising as HOME-XXXX
-   SensorTask started (HTS221=OK, LSM6DSL=OK).
-   AudioTask started ...
+accel @ 104 Hz → 高通 Butterworth（fc=0.4 Hz）移除重力
+              → 線性加速度 magnitude
+              → Vibration path：RMS → 震動強度（mg）
+              → Quake path：1–10 Hz 帶通 Butterworth → RMS → 地震警報
 ```
 
-詳細說明見 [STM32 Client 開發文件](docs/STM32%20Client%20開發文件.md)。
-
-### 3. Raspberry Pi 伺服器部署
-
-```bash
-# 安裝系統套件
-sudo apt update
-sudo apt install -y libglib2.0-dev libbluetooth-dev pkg-config
-
-# 安裝 uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
-source $HOME/.local/bin/env
-
-# 進入伺服器目錄
-cd Intelligent-home-RPi-server
-
-# 安裝相依套件
-uv sync
-
-# 設定 BLE 權限（避免每次 sudo）
-sudo setcap cap_net_raw,cap_net_admin+eip \
-  $(uv run python -c "import bluepy, os; print(os.path.join(os.path.dirname(bluepy.__file__), 'bluepy-helper'))")
-
-# 設定環境變數
-cp .env.example .env
-# 編輯 .env，填入 HOME_SERVER_SECRET_KEY
-
-# 啟動伺服器
-uv run python -m home_server
-```
-
-瀏覽器開啟 `http://<RPi的IP>:5000`
-
-### 4. 新增裝置與頻道
-
-1. 註冊帳號並登入
-2. Devices → **Scan** → 選擇 `HOME-XXXX` → 填名稱 → Add Device
-3. 進入裝置頁 → Add Channel → 從下拉選單選預設頻道（例如「溫度 (°C)」）
-4. 回 Dashboard，即時折線圖開始更新
-
----
-
-## GATT 表（BLE 對外契約）
+**GATT 表（對外契約，燒錄後固定）：**
 
 Base UUID：`xxxxxxxx-8E22-4541-9D4C-21EDAE82ED19`
 
-| Characteristic | UUID 短碼 | 屬性 | 格式 |
+| Characteristic | UUID 短碼 | 格式 | 說明 |
 |---|---|---|---|
-| Temperature | `1A220002` | Read + Notify | float32_le |
-| Humidity | `1A220003` | Read + Notify | float32_le |
-| AccelMagnitude | `1A220004` | Read + Notify | float32_le |
-| GyroMagnitude | `1A220005` | Read + Notify | float32_le |
-| MotionAlert | `1A220006` | Read + Notify | uint8 |
-| MicLevel | `1A220007` | Read + Notify | uint16_le |
-| LoudAlert | `1A220008` | Read + Notify | uint8 |
-| AlarmDetected | `1A22000A` | Read + Notify | uint8 |
-| MicDBA | `1A22000B` | Read + Notify | float32_le |
-| VibrationRMS | `1A22000C` | Read + Notify | float32_le |
-| VibrationAlert | `1A22000D` | Read + Notify | uint8 |
-| QuakeAlert | `1A22000E` | Read + Notify | uint8 |
-| Led1State | `1A22F002` | Read + Write | uint8 |
-| ControlFlag | `1A22F003` | Read + Write | uint8 |
+| Temperature | `1A220002` | float32_le | 溫度 °C |
+| Humidity | `1A220003` | float32_le | 濕度 % RH |
+| AccelMagnitude | `1A220004` | float32_le | 加速度量值 g |
+| GyroMagnitude | `1A220005` | float32_le | 陀螺儀量值 dps |
+| MotionAlert | `1A220006` | uint8 | 異常晃動警示 0/1 |
+| MicLevel | `1A220007` | uint16_le | 麥克風音量 0–1023 |
+| LoudAlert | `1A220008` | uint8 | 大聲警示 0/1 |
+| AlarmDetected | `1A22000A` | uint8 | 警報聲偵測 0/1 |
+| MicDBA | `1A22000B` | float32_le | A-加權音量 dBA |
+| VibrationRMS | `1A22000C` | float32_le | 震動強度 mg |
+| VibrationAlert | `1A22000D` | uint8 | 家電運轉偵測 0/1 |
+| QuakeAlert | `1A22000E` | uint8 | 地震警報 0/1 |
+| Led1State | `1A22F002` | uint8 | LED 控制（Write）|
+| ControlFlag | `1A22F003` | uint8 | 通用旗標（Write）|
+
+### 2.3 Raspberry Pi 伺服器（`Intelligent-home-RPi-server`）
+
+**技術選型：** Python 3.11、Flask、Flask-SocketIO（threading mode）、bluepy、SQLite、Jinja2 + HTMX + Bootstrap 5 + Chart.js
+
+**分層架構：**
+
+```
+Web Layer     (Flask Blueprint)   — HTTP 路由、SocketIO 事件、Jinja2 模板
+Service Layer (services/)         — 業務邏輯：device/channel/user service
+BLE Layer     (ble/)              — BluepyManager（每個 peripheral 一個 worker thread）
+                                    MockBLEManager（開發 / 測試用）
+DB Layer      (db/)               — SQLite repository（users / devices / channels / readings）
+```
+
+**關鍵設計決策：**
+
+- `bluepy` 是同步阻塞函式庫，每個 peripheral 獨立 worker thread + command queue + `Future`，Flask 主執行緒透過 `Future.result()` 等待，避免阻塞
+- Notify → SocketIO 即時推播（不限頻）；DB 寫入限頻 1 Hz，控制儲存量
+- 斷線後指數退避重連（1 s → 2 s → … → 60 s 上限），重連後自動重新訂閱所有頻道
+- BLE 位址型別自動推斷（`infer_addr_type()`），處理 STM32 靜態隨機位址
+- 頻道 Widget 依資料類型自動切換顯示模式（折線圖 / flag LED 燈號 / enum badge）
 
 ---
 
-## 技術棧
+## 三、成果
 
-### STM32 韌體
-- **MCU**：STM32L475VG（Cortex-M4F, 80 MHz），**BLE**：BlueNRG-MS
-- **OS**：FreeRTOS（CMSIS-RTOS2）— BleTask / SensorTask / AudioTask
-- **DSP**：CMSIS-DSP V1.6.0（`arm_rfft_fast_f32`、`arm_biquad_cascade_df1_f32`）
-- **build**：STM32CubeIDE 1.19.0 / CMake preset
+### 3.1 感測與 DSP 功能
 
-### RPi 伺服器
-- **語言**：Python 3.11，**套件管理**：uv
-- **Web**：Flask + Flask-SocketIO（threading mode）+ Flask-Login + Flask-WTF
-- **BLE**：bluepy（Linux only；開發環境自動 fallback MockBLEManager）
-- **DB**：SQLite（WAL 模式）
-- **前端**：Jinja2 + HTMX + Bootstrap 5 + Chart.js（全部 vendor，無 CDN 依賴）
-- **測試**：pytest（190+ tests）；ruff + mypy strict 全綠
+| 功能 | 顯示方式 | 更新頻率 |
+|---|---|---|
+| 溫度、濕度 | 即時折線圖 | 1 s |
+| 加速度量值、陀螺儀量值 | 即時折線圖 | 250 ms |
+| 麥克風音量（0–1023）| 即時折線圖 | 200 ms |
+| **A-加權音量 dB(A)**（IEC 61672-1 A-weighting IIR）| 即時折線圖 | 200 ms |
+| **震動強度 RMS（mg）**（104 Hz FIFO + 高通 biquad）| 即時折線圖 | 1 s |
 
----
+### 3.2 警報偵測
 
-## 專案狀態
+觸發時右上角彈出紅色 Bootstrap Toast 通知（5 秒），並在 Dashboard 顯示 LED 燈號與上次觸發時間。
 
-| 項目 | 狀態 |
+| 警報 | 觸發條件 |
 |---|---|
-| STM32 韌體（BLE + 感測器 + DSP）| ✅ 完成 |
-| RPi Web 伺服器（Phase 1–3e）| ✅ 完成 |
-| 即時 Dashboard（折線圖 + 警報 Toast）| ✅ 完成 |
-| 190+ unit tests，ruff / mypy 全綠 | ✅ 完成 |
-| Phase 4：多節點長時間穩定性 + systemd 部署 | 🚧 進行中 |
+| 異常晃動 | 加速度 > 1.8 g 或陀螺儀 > 250 dps，持續 ≥ 100 ms，1 s lockout |
+| 大聲警示 | 麥克風音量 > 400，持續 ≥ 200 ms，1 s lockout |
+| **警報聲偵測** | 1024-point FFT peak ratio（2800–3600 Hz）> 30% |
+| **家電運轉** | 震動 RMS > 30 mg（遲滯門檻 15 mg）|
+| **地震警報** | 1–10 Hz 帶通 RMS > 20 mg，2 s lockout |
+
+### 3.3 遠端控制
+
+- 瀏覽器 Toggle 開關 → BLE Write → STM32 LED1（PA5）即時亮滅
+- ControlFlag 數值寫入（保留擴充點）
+
+### 3.4 Web 管理系統
+
+- 多使用者帳號（bcrypt 雜湊，CSRF 保護）
+- BLE 掃描新增裝置；14 個頻道預設清單，下拉選單快速套用
+- 裝置連線狀態即時更新；斷線自動重連
+- Dashboard 時間窗切換（1m / 10m / 1h / 1d / 1w）
+- 支援多節點同時管理
+
+### 3.5 工程品質
+
+- **190+ unit tests**，全部通過
+- `ruff`（lint + format）與 `mypy strict`（型別檢查）全綠
+- BLE 後端抽象化（`BLEManager` Protocol），非 BLE 層在 Windows 上即可執行完整測試
+
+### 3.6 克服的技術挑戰
+
+| 挑戰 | 解法 |
+|---|---|
+| bluepy 非執行緒安全 | 每個 peripheral 獨立 worker thread + command queue + Future |
+| 開發板 DMA1 硬體故障（DMA 不搬資料）| 逐層 dump 暫存器確認根因，換板後改 DMA + interrupt 驅動，CPU 佔用從 ~5% 降至 ~0% |
+| 多執行緒 SQLite | Connection injection 模式；BLE worker 執行緒獨立短連線 |
+| STM32 靜態隨機 BLE 位址 | `infer_addr_type()` 依位址高 2 bits 自動推斷 |
+| A-weighting 在 8 kHz 下的精度限制 | 已記錄於程式碼；3 kHz 以上有 ~2 dB 偏差，標示「calibration pending」|
+| LSM6DSL 104 Hz 高速取樣 vs. 250 ms task 週期 | FIFO 連續模式 + 每次批量排水約 26 samples，等效 104 Hz 連續 DSP 輸入 |
 
 ---
 
-## 相關文件
+## 四、參考資料
 
-| 文件 | 說明 |
-|---|---|
-| [系統總設計](docs/智能家庭控制系統開發文件%20(System%20Development%20Document).md) | 架構概覽、BLE 通訊模型 |
-| [RPi Server 開發文件](docs/RPi-Server%20開發文件.md) | 伺服器分層設計、API、部署 |
-| [STM32 Client 開發文件](docs/STM32%20Client%20開發文件.md) | 韌體架構、GATT 規格、FreeRTOS 任務模型 |
-| [期末報告（v2）](docs/project_summary_hackmd_v2.md) | 完整系統說明，含 DSP 技術細節 |
-| [RPi Server README](Intelligent-home-RPi-server/README.md) | 伺服器快速啟動指令 |
-| [STM32 Client README](Intelligent-home-STM32-client/README.md) | 韌體編譯、燒錄、驗證 |
+### 硬體文件
+- STMicroelectronics, *STM32L475VG Datasheet*, DocID028698 Rev 4
+- STMicroelectronics, *STM32L4 Series Reference Manual (RM0351)*, Rev 9
+- STMicroelectronics, *B-L475E-IOT01A User Manual (UM2153)*, Rev 5
+- STMicroelectronics, *HTS221 Datasheet* — Capacitive digital sensor for relative humidity and temperature
+- STMicroelectronics, *LSM6DSL Datasheet* — iNEMO inertial module, 6 DoF IMU
+- STMicroelectronics, *MP34DT01-M Datasheet* — MEMS audio sensor, omnidirectional digital microphone
+
+### 軟體與中介層
+- STMicroelectronics, *BlueNRG-MS Middleware* — HCI transport layer and GATT/GAP ACI
+- STMicroelectronics, *X-CUBE-MEMS1* — MEMS component driver pack（HTS221、LSM6DSL）
+- ARM, *CMSIS-DSP Software Library V1.6.0* — `arm_rfft_fast_f32`、`arm_biquad_cascade_df1_f32`
+- FreeRTOS, *FreeRTOS Kernel V10* + CMSIS-RTOS2 wrapper
+
+### 標準與演算法
+- IEC 61672-1:2013, *Electroacoustics — Sound level meters — Part 1: Specifications* — A-weighting 濾波器極點頻率
+- A. V. Oppenheim & R. W. Schafer, *Discrete-Time Signal Processing*, 3rd ed. — bilinear transform、Butterworth filter design
+
+### 開放原始碼函式庫（RPi 端）
+- Pallets, *Flask* — [https://flask.palletsprojects.com](https://flask.palletsprojects.com)
+- *Flask-SocketIO* — [https://flask-socketio.readthedocs.io](https://flask-socketio.readthedocs.io)
+- *bluepy* — BLE peripheral interface for Python on Linux — [https://github.com/IanHarvey/bluepy](https://github.com/IanHarvey/bluepy)
+- *Chart.js* — [https://www.chartjs.org](https://www.chartjs.org)
+- *HTMX* — [https://htmx.org](https://htmx.org)
+- *Bootstrap 5* — [https://getbootstrap.com](https://getbootstrap.com)
+- *uv* — Python package manager — [https://github.com/astral-sh/uv](https://github.com/astral-sh/uv)
+
+### 開發工具
+- STMicroelectronics, *STM32CubeIDE 1.19.0* — [https://www.st.com/stm32cubeide](https://www.st.com/stm32cubeide)
+- *nRF Connect for Mobile* — BLE scanner / GATT browser（Nordic Semiconductor）
