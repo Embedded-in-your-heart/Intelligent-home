@@ -8,6 +8,10 @@
 
 [![Demo Video](https://img.youtube.com/vi/8QCGGpyoB6g/0.jpg)](https://www.youtube.com/watch?v=8QCGGpyoB6g)
 
+## 簡報
+
+[查看簡報（Canva）](https://canva.link/24t8mix194ulgak)
+
 ---
 
 ## 目錄
