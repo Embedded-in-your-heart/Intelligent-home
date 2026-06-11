@@ -4,6 +4,10 @@
 > **課程**：Embedded Systems Lab｜**團隊**：趙子佾、詹詠翔、詹育晟  
 > **GitHub**：[Embedded-in-your-heart/Intelligent-home](https://github.com/Embedded-in-your-heart/Intelligent-home)
 
+## Demo 影片
+
+[![Demo Video](https://img.youtube.com/vi/8QCGGpyoB6g/0.jpg)](https://www.youtube.com/watch?v=8QCGGpyoB6g)
+
 ---
 
 ## 目錄
